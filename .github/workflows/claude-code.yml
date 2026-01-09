@@ -122,7 +122,8 @@ jobs:
           AGENT_TYPE=$(echo "$RESPONSE" | jq -r '.job.agent_type // "github_action"')
           ATTEMPT_COUNT=$(echo "$RESPONSE" | jq -r '.job.attempt_count // 0')
           MAX_ATTEMPTS=$(echo "$RESPONSE" | jq -r '.job.max_attempts // 3')
-          EXPECTED_PR_TITLE=$(echo "$RESPONSE" | jq -r '.job.expected_pr_title // ""')
+          # PR title comes from payload.execution (canonical source)
+          EXPECTED_PR_TITLE=$(echo "$JOB_PAYLOAD" | jq -r '.execution.expected_pr_title // ""')
           FEEDBACK_HISTORY=$(echo "$RESPONSE" | jq -c '.job.feedback_history // []')
           
           # Extract from payload.job_type (baked at job creation - immutable)
