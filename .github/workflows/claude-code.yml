@@ -428,7 +428,7 @@ jobs:
                   -e "s|{{REPO_NAME}}|${{ inputs.repo_name }}|g" \
                   .github/prompts/review-pr.txt >> /tmp/user-message.txt
             else
-              echo "::error::Missing .prompts/review-pr.txt"
+              echo "::error::Missing .github/prompts/review-pr.txt"
               exit 1
             fi
           fi
