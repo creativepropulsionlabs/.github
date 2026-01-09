@@ -408,7 +408,7 @@ jobs:
           
           # Add mode-specific prompt from external file
           if [ "${{ inputs.mode }}" = "execute" ]; then
-            if [ -f ".prompts/execute-job.txt" ]; then
+            if [ -f ".github/prompts/execute-job.txt" ]; then
               # Write acceptance criteria to file for agent to read
               echo "$ACCEPTANCE_CRITERIA" > /tmp/acceptance-criteria.txt
               # Substitute only simple placeholders (no multiline content)
