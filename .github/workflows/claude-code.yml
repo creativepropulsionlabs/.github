@@ -575,22 +575,11 @@ jobs:
           fi
           
           if [ "$INPUT_MODE" = "execute" ]; then
-            PR_URL=$(echo "$RESULT_TEXT" | grep -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' | head -1 || echo "")
-            PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$' || echo "")
-            
-            ERROR_MSG=""
-            if [ -z "$PR_URL" ] && [ "$STATUS" = "success" ]; then
-              echo "WARNING: No PR URL found in successful execute result"
-              STATUS="error"
-              ERROR_MSG="Execute completed but no PR URL found in output"
-            fi
-            
-            echo "Execute mode - PR URL: $PR_URL, PR Number: $PR_NUMBER"
-            
-            # Always use canonical branch name
+            # PR is created in a separate step after Claude exits
+            # Just record the canonical branch name
             BRANCH_NAME="job/$INPUT_JOB_ID"
             
-            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "Execute mode - Branch: $BRANCH_NAME"
             echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
             
             jq -n \
@@ -602,8 +591,6 @@ jobs:
               --arg toolset "$INPUT_TOOLSET" \
               --rawfile input_args /tmp/input-args-content.txt \
               --rawfile output_result /tmp/output-result-content.txt \
-              --arg pr_url "$PR_URL" \
-              --arg pr_number "$PR_NUMBER" \
               --arg branch_name "$BRANCH_NAME" \
               --argjson input_tokens "$INPUT_TOKENS" \
               --argjson output_tokens "$OUTPUT_TOKENS" \
@@ -612,7 +599,6 @@ jobs:
               --arg provider "$INPUT_PROVIDER" \
               --arg model "$INPUT_MODEL" \
               --argjson iterations 1 \
-              --arg error "$ERROR_MSG" \
               '{
                 status: $status,
                 mode: $mode,
@@ -622,16 +608,13 @@ jobs:
                 toolset: $toolset,
                 input_args: $input_args,
                 output_result: $output_result,
-                pr_url: $pr_url,
-                pr_number: (if $pr_number == "" then null else ($pr_number | tonumber) end),
                 branch_name: $branch_name,
                 usage: { input: $input_tokens, output: $output_tokens },
                 cost_usd: $cost_usd,
                 duration_ms: $duration_ms,
                 provider: $provider,
                 model: $model,
-                iterations: $iterations,
-                error: (if $error == "" then null else $error end)
+                iterations: $iterations
               }' > /tmp/claude-result.json
           
           else
