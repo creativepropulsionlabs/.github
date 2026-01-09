@@ -424,7 +424,7 @@ jobs:
               # Substitute only simple placeholders (no multiline content)
               sed -e "s|{{CANONICAL_BRANCH}}|$CANONICAL_BRANCH|g" \
                   -e "s|{{DEFAULT_BRANCH}}|$DEFAULT_BRANCH|g" \
-                  .github/prompts/execute-job.txt >> /tmp/user-message.txt
+                  .org/.github/prompts/execute-job.txt >> /tmp/user-message.txt
             else
               echo "::error::Missing .github/prompts/execute-job.txt"
               exit 1
