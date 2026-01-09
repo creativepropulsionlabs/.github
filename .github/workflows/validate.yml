@@ -1,0 +1,131 @@
+# Reusable Validation Orchestration Workflow
+# 
+# Post-validation reporting only. Called by repo-specific validate.yml after
+# validation steps complete.
+#
+# Responsibilities:
+# - Normalize status (SKIPPED → VALIDATED)
+# - Signal final webhook to n8n
+# - Comment on PR (VALIDATED only, generic message)
+# - Fail workflow if REJECTED
+#
+# NOT responsible for:
+# - Job ID resolution (caller has branch context)
+# - Secret validation (pre-validation, stays in caller)
+# - VALIDATING signal (pre-validation, stays in caller)
+# - REJECTED PR comments (caller has filesystem access to error logs)
+#
+# See: ADR-0011 (Reusable validation workflow architecture)
+
+name: Validation Orchestration
+
+on:
+  workflow_call:
+    inputs:
+      repo_name:
+        description: 'Repository name (e.g., mixplaces_control_ui)'
+        required: true
+        type: string
+      validation_status:
+        description: 'Validation result: VALIDATED | REJECTED | SKIPPED'
+        required: true
+        type: string
+      validation_reason:
+        description: 'Reason for status (optional, used for REJECTED)'
+        required: false
+        type: string
+        default: ''
+      pr_number:
+        description: 'PR number to comment on'
+        required: false
+        type: string
+        default: ''
+      job_id:
+        description: 'Job UUID for webhook signaling'
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      SUPABASE_URL:
+        required: true
+      SUPABASE_ANON_KEY:
+        required: true
+      N8N_BASE_URL:
+        required: true
+
+jobs:
+  report:
+    name: Report Validation Result
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Normalize status for pipeline state machine
+      # SKIPPED → VALIDATED (no changes = nothing to fail)
+      - name: Normalize Status
+        id: normalize
+        run: |
+          STATUS="${{ inputs.validation_status }}"
+          REASON="${{ inputs.validation_reason }}"
+          
+          if [ "$STATUS" = "SKIPPED" ]; then
+            STATUS="VALIDATED"
+            REASON="No source changes (fast pass)"
+          fi
+          
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "reason=$REASON" >> $GITHUB_OUTPUT
+          echo "Normalized status: $STATUS"
+
+      # Signal final validation result to n8n webhook
+      - name: Signal Validation Result
+        if: inputs.job_id != ''
+        run: |
+          curl -sf -X POST "${{ secrets.N8N_BASE_URL }}/webhook/validation-result" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"repo\": \"${{ inputs.repo_name }}\",
+              \"pr_number\": ${{ inputs.pr_number || 0 }},
+              \"status\": \"${{ steps.normalize.outputs.status }}\",
+              \"reason\": \"${{ steps.normalize.outputs.reason }}\"
+            }"
+
+      # Generic VALIDATED comment - no repo-specific checklist
+      # Per ADR-0011: checklists are presentation, not contract
+      - name: Comment on PR (VALIDATED)
+        if: inputs.pr_number != '' && steps.normalize.outputs.status == 'VALIDATED'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt('${{ inputs.pr_number }}', 10);
+            if (isNaN(prNumber) || prNumber <= 0) {
+              console.log('Invalid PR number, skipping comment');
+              return;
+            }
+            
+            const body = [
+              '## ✅ Validation: VALIDATED',
+              '',
+              'All required checks completed successfully.',
+              '',
+              '**Review, merge, and deploy are allowed.**',
+              '',
+              '---',
+              '*Automated validation by GitHub Actions*'
+            ].join('\n');
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: '${{ inputs.repo_name }}',
+              issue_number: prNumber,
+              body: body
+            });
+
+      # REJECTED = workflow failure
+      # Note: REJECTED PR comment is handled by caller (needs error logs)
+      - name: Fail if REJECTED
+        if: steps.normalize.outputs.status == 'REJECTED'
+        run: |
+          echo "Validation REJECTED: ${{ steps.normalize.outputs.reason }}"
+          exit 1
