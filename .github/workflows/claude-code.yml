@@ -780,15 +780,72 @@ jobs:
             echo "✅ PR title already correct"
           fi
 
+      - name: Create Pull Request
+        id: create_pr
+        if: inputs.mode == 'execute' && success()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          OPERATION: ${{ steps.context.outputs.operation }}
+          JOB_TYPE_LABEL: ${{ steps.context.outputs.job_type_label }}
+          SCHEMA_NAME: ${{ steps.context.outputs.schema_name }}
+        run: |
+          echo "=== Creating Pull Request ==="
+          
+          BRANCH_NAME="job/${{ inputs.job_id }}"
+          DEFAULT_BRANCH="${{ steps.repo_info.outputs.default_branch }}"
+          
+          # Check if branch was pushed
+          if ! git ls-remote --heads origin "$BRANCH_NAME" | grep -q "$BRANCH_NAME"; then
+            echo "::error::Branch $BRANCH_NAME not found on remote. Claude may have failed to push."
+            exit 1
+          fi
+          
+          # Compute PR title: {Operation} {job_type.label}: {schema.name}
+          OP_INITCAP=$(echo "$OPERATION" | sed 's/.*/\L&/; s/[a-z]*/\u&/')
+          if [ -n "$SCHEMA_NAME" ]; then
+            PR_TITLE="${OP_INITCAP} ${JOB_TYPE_LABEL}: ${SCHEMA_NAME}"
+          else
+            PR_TITLE="${OP_INITCAP} ${JOB_TYPE_LABEL}"
+          fi
+          
+          # Check if PR already exists for this branch
+          EXISTING_PR=$(gh pr list --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
+            --head "$BRANCH_NAME" --state open --json number -q '.[0].number' || echo "")
+          
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #$EXISTING_PR already exists for branch $BRANCH_NAME"
+            PR_NUMBER="$EXISTING_PR"
+            PR_URL="https://github.com/${{ inputs.repo_owner }}/${{ inputs.repo_name }}/pull/$PR_NUMBER"
+            
+            # Update title if needed
+            gh pr edit "$PR_NUMBER" --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} --title "$PR_TITLE" || true
+          else
+            echo "Creating new PR..."
+            PR_URL=$(gh pr create \
+              --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
+              --head "$BRANCH_NAME" \
+              --base "$DEFAULT_BRANCH" \
+              --title "$PR_TITLE" \
+              --body "Automated PR for job \`${{ inputs.job_id }}\`")
+            
+            PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+            echo "✅ Created PR #$PR_NUMBER"
+          fi
+          
+          echo "PR URL: $PR_URL"
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
       - name: Trigger Validation Workflow
-        if: inputs.mode == 'execute' && steps.process.outputs.pr_number != ''
+        if: inputs.mode == 'execute' && steps.create_pr.outputs.pr_number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "=== Triggering Validation Workflow ==="
           gh workflow run validate.yml \
             --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
-            -f pr_number="${{ steps.process.outputs.pr_number }}" \
+            -f pr_number="${{ steps.create_pr.outputs.pr_number }}" \
             -f job_id="${{ inputs.job_id }}"
           echo "✅ Validation workflow triggered"
 
