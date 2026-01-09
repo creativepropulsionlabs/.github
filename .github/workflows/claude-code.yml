@@ -234,7 +234,8 @@ jobs:
             exit 0
           fi
           
-          for key in $(echo "$REQUIRED_SECRETS" | jq -r '.[].inject_as'); do
+          # Validate base secret name (not inject_as - that's for deployment-time)
+          for key in $(echo "$REQUIRED_SECRETS" | jq -r '.[].name'); do
             if [ -z "${!key}" ]; then
               echo "::error::Required secret '$key' is not present in environment"
               exit 1
