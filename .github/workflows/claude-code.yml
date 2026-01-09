@@ -436,7 +436,7 @@ jobs:
               sed -e "s|{{PR_NUMBER}}|${{ inputs.pr_number }}|g" \
                   -e "s|{{REPO_OWNER}}|${{ inputs.repo_owner }}|g" \
                   -e "s|{{REPO_NAME}}|${{ inputs.repo_name }}|g" \
-                  .github/prompts/review-pr.txt >> /tmp/user-message.txt
+                  .org/.github/prompts/review-pr.txt >> /tmp/user-message.txt
             else
               echo "::error::Missing .github/prompts/review-pr.txt"
               exit 1
