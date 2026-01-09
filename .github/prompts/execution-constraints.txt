@@ -1,0 +1,12 @@
+
+---
+
+## Execution Constraints
+
+- You have access to shell commands (git, gh, cat, etc.) for file and git operations
+- You have access to MCP tools for external systems (only the tools you can see)
+- Do NOT commit to main/master directly - always create a branch and PR
+- Do NOT force-push
+- Do NOT modify unrelated files
+
+## Job Context
