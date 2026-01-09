@@ -406,14 +406,23 @@ jobs:
           if [ "$ATTEMPT_COUNT" -gt 1 ] && [ -f ".org/.github/prompts/retry-context.txt" ]; then
             echo "Adding retry context (attempt $ATTEMPT_COUNT)..."
             
-            # Substitute placeholders in retry template
+            # Substitute ATTEMPT_COUNT placeholder first (simple, safe)
             sed "s/{{ATTEMPT_COUNT}}/$ATTEMPT_COUNT/g" .org/.github/prompts/retry-context.txt > /tmp/retry-block.txt
             
-            # Write feedback history as JSON block
+            # Write feedback history to file
             echo "$FEEDBACK_HISTORY" > /tmp/feedback-raw.txt
-            sed -i "s|{{FEEDBACK_HISTORY}}|$(cat /tmp/feedback-raw.txt)|g" /tmp/retry-block.txt
             
-            cat /tmp/retry-block.txt >> /tmp/user-message.txt
+            # Use awk for safe file insertion (no regex, no escaping needed)
+            awk '
+              /{{FEEDBACK_HISTORY}}/ {
+                while ((getline line < "/tmp/feedback-raw.txt") > 0) print line
+                close("/tmp/feedback-raw.txt")
+                next
+              }
+              { print }
+            ' /tmp/retry-block.txt > /tmp/retry-context.txt
+            
+            cat /tmp/retry-context.txt >> /tmp/user-message.txt
           fi
           
           # Add mode-specific prompt from external file
