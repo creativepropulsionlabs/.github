@@ -1,21 +1,25 @@
-name: Validate | Workflow Files | Job Pipeline
+# Reusable Validation Orchestration Workflow
+# 
+# Post-validation reporting only. Called by repo-specific validate.yml after
+# validation steps complete.
+#
+# Responsibilities:
+# - Normalize status (SKIPPED → VALIDATED)
+# - Signal final webhook to n8n
+# - Comment on PR (VALIDATED only, generic message)
+# - Fail workflow if REJECTED
+#
+# NOT responsible for:
+# - Job ID resolution (caller has branch context)
+# - Secret validation (pre-validation, stays in caller)
+# - VALIDATING signal (pre-validation, stays in caller)
+# - REJECTED PR comments (caller has filesystem access to error logs)
+#
+# See: ADR-0011 (Reusable validation workflow architecture)
 
-# IMPORTANT: No paths filter - required checks must run on every PR
-# Internal change detection handles the no-op case
+name: Validation Orchestration
+
 on:
-  pull_request:
-    branches: [master]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number to comment on'
-        required: false
-        type: string
-      job_id:
-        description: 'Supabase Job UUID for status updates'
-        required: false
-        type: string
-  # Also serves as reusable workflow for other repos
   workflow_call:
     inputs:
       repo_name:
@@ -41,251 +45,76 @@ on:
         required: false
         type: string
         default: ''
+
     secrets:
+      SUPABASE_PUBLIC_URL:
+        required: false
+      SUPABASE_ANON_KEY:
+        required: false
       N8N_BASE_URL:
         required: false
 
-permissions:
-  contents: read
-  pull-requests: write
-
 jobs:
-  # ============================================================================
-  # REPO-SPECIFIC VALIDATION (runs on pull_request and workflow_dispatch)
-  # ============================================================================
-  validate:
-    name: Validate Workflow Files
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    
-    outputs:
-      status: ${{ steps.result.outputs.status }}
-      reason: ${{ steps.result.outputs.reason }}
-      job_id: ${{ steps.job.outputs.job_id }}
-      pr_number: ${{ steps.pr_number.outputs.number }}
-    
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Resolve Job ID
-        id: job
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BRANCH="${{ github.head_ref }}"
-          else
-            if [ -n "${{ inputs.job_id }}" ]; then
-              echo "job_id=${{ inputs.job_id }}" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            BRANCH="${{ github.ref_name }}"
-          fi
-          
-          JOB_ID=$(echo "$BRANCH" | sed -n 's|^job/||p')
-          
-          if [ -z "$JOB_ID" ]; then
-            echo "::notice::Non-job branch detected: $BRANCH (webhooks will be skipped)"
-          else
-            echo "Resolved job_id: $JOB_ID"
-          fi
-          echo "job_id=$JOB_ID" >> $GITHUB_OUTPUT
-
-      - name: Check for Source Changes
-        id: changes
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(yml|yaml|md|txt)$' || echo "")
-          else
-            CHANGED="workflow_dispatch_always_validate"
-          fi
-          
-          if [ -z "$CHANGED" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "✓ No source files changed - fast pass"
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "Source files to validate:"
-            echo "$CHANGED" | head -20
-          fi
-
-      - name: Fast Pass (No Changes)
-        if: steps.changes.outputs.skip == 'true'
-        run: |
-          echo "## ✓ Validation Skipped - No Source Changes" >> $GITHUB_STEP_SUMMARY
-
-      - name: Signal Validation Started
-        if: steps.job.outputs.job_id != '' && steps.changes.outputs.skip != 'true'
-        run: |
-          curl -X POST "${{ secrets.N8N_BASE_URL }}/webhook/validation-result" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "job_id": "${{ steps.job.outputs.job_id }}",
-              "repo": ".github",
-              "pr_number": ${{ github.event.pull_request.number || inputs.pr_number || 0 }},
-              "status": "VALIDATING"
-            }'
-
-      - name: Setup Python
-        if: steps.changes.outputs.skip != 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Validate YAML Syntax
-        id: yaml_check
-        if: steps.changes.outputs.skip != 'true'
-        run: |
-          set -o pipefail
-          pip install yamllint --quiet
-          
-          if yamllint -d relaxed .github/workflows/*.yml 2>&1 | tee yaml-output.txt; then
-            echo "✅ YAML syntax valid" >> $GITHUB_STEP_SUMMARY
-            echo "passed=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ YAML syntax errors" >> $GITHUB_STEP_SUMMARY
-            echo "passed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Determine Result
-        id: result
-        run: |
-          if [ "${{ steps.changes.outputs.skip }}" == "true" ]; then
-            echo "status=SKIPPED" >> $GITHUB_OUTPUT
-            echo "reason=No source files changed" >> $GITHUB_OUTPUT
-          elif [ "${{ steps.yaml_check.outputs.passed }}" == "false" ]; then
-            echo "status=REJECTED" >> $GITHUB_OUTPUT
-            echo "reason=YAML syntax errors in workflow files" >> $GITHUB_OUTPUT
-          else
-            echo "status=VALIDATED" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Get PR Number
-        id: pr_number
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-          elif [ -n "${{ inputs.pr_number }}" ]; then
-            echo "number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
-          else
-            echo "number=" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Comment on PR (REJECTED)
-        if: steps.pr_number.outputs.number != '' && steps.result.outputs.status == 'REJECTED'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const prNumber = parseInt('${{ steps.pr_number.outputs.number }}', 10);
-            let body = '## ❌ Validation: REJECTED\n\n';
-            body += '**Reason:** ${{ steps.result.outputs.reason }}\n\n';
-            if (fs.existsSync('yaml-output.txt')) {
-              const yamlOutput = fs.readFileSync('yaml-output.txt', 'utf8');
-              body += '### YAML Errors\n\n```\n' + yamlOutput.slice(-2000) + '\n```\n\n';
-            }
-            body += '---\n*Automated validation by GitHub Actions*';
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body
-            });
-
-  # Post-validation reporting for .github repo itself
-  report-self:
-    name: Report Result (Self)
-    needs: validate
-    if: always() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Normalize Status
-        id: normalize
-        run: |
-          STATUS="${{ needs.validate.outputs.status }}"
-          REASON="${{ needs.validate.outputs.reason }}"
-          if [ "$STATUS" = "SKIPPED" ]; then
-            STATUS="VALIDATED"
-            REASON="No source changes (fast pass)"
-          fi
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "reason=$REASON" >> $GITHUB_OUTPUT
-
-      - name: Signal Validation Result
-        if: needs.validate.outputs.job_id != ''
-        run: |
-          curl -sf -X POST "${{ secrets.N8N_BASE_URL }}/webhook/validation-result" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "job_id": "${{ needs.validate.outputs.job_id }}",
-              "repo": ".github",
-              "pr_number": ${{ needs.validate.outputs.pr_number || 0 }},
-              "status": "${{ steps.normalize.outputs.status }}",
-              "reason": "${{ steps.normalize.outputs.reason }}"
-            }'
-
-      - name: Comment on PR (VALIDATED)
-        if: needs.validate.outputs.pr_number != '' && steps.normalize.outputs.status == 'VALIDATED'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prNumber = parseInt('${{ needs.validate.outputs.pr_number }}', 10);
-            if (isNaN(prNumber) || prNumber <= 0) return;
-            const body = '## ✅ Validation: VALIDATED\n\nAll checks passed.\n\n---\n*Automated validation by GitHub Actions*';
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body
-            });
-
-      - name: Fail if REJECTED
-        if: steps.normalize.outputs.status == 'REJECTED'
-        run: exit 1
-
-  # ============================================================================
-  # REUSABLE WORKFLOW (called by other repos via workflow_call)
-  # ============================================================================
   report:
     name: Report Validation Result
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_call'
     
     steps:
+      # Normalize status for pipeline state machine
+      # SKIPPED → VALIDATED (no changes = nothing to fail)
       - name: Normalize Status
         id: normalize
         run: |
           STATUS="${{ inputs.validation_status }}"
           REASON="${{ inputs.validation_reason }}"
+          
           if [ "$STATUS" = "SKIPPED" ]; then
             STATUS="VALIDATED"
             REASON="No source changes (fast pass)"
           fi
+          
           echo "status=$STATUS" >> $GITHUB_OUTPUT
           echo "reason=$REASON" >> $GITHUB_OUTPUT
+          echo "Normalized status: $STATUS"
 
+      # Signal final validation result to n8n webhook
       - name: Signal Validation Result
         if: inputs.job_id != ''
         run: |
           curl -sf -X POST "${{ secrets.N8N_BASE_URL }}/webhook/validation-result" \
             -H "Content-Type: application/json" \
-            -d '{
-              "job_id": "${{ inputs.job_id }}",
-              "repo": "${{ inputs.repo_name }}",
-              "pr_number": ${{ inputs.pr_number || 0 }},
-              "status": "${{ steps.normalize.outputs.status }}",
-              "reason": "${{ steps.normalize.outputs.reason }}"
-            }'
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"repo\": \"${{ inputs.repo_name }}\",
+              \"pr_number\": ${{ inputs.pr_number || 0 }},
+              \"status\": \"${{ steps.normalize.outputs.status }}\",
+              \"reason\": \"${{ steps.normalize.outputs.reason }}\"
+            }"
 
+      # Generic VALIDATED comment - no repo-specific checklist
+      # Per ADR-0011: checklists are presentation, not contract
       - name: Comment on PR (VALIDATED)
         if: inputs.pr_number != '' && steps.normalize.outputs.status == 'VALIDATED'
         uses: actions/github-script@v7
         with:
           script: |
             const prNumber = parseInt('${{ inputs.pr_number }}', 10);
-            if (isNaN(prNumber) || prNumber <= 0) return;
-            const body = '## ✅ Validation: VALIDATED\n\nAll checks passed.\n\n---\n*Automated validation by GitHub Actions*';
+            if (isNaN(prNumber) || prNumber <= 0) {
+              console.log('Invalid PR number, skipping comment');
+              return;
+            }
+            
+            const body = [
+              '## ✅ Validation: VALIDATED',
+              '',
+              'All required checks completed successfully.',
+              '',
+              '**Review, merge, and deploy are allowed.**',
+              '',
+              '---',
+              '*Automated validation by GitHub Actions*'
+            ].join('\n');
+            
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: '${{ inputs.repo_name }}',
@@ -293,6 +122,10 @@ jobs:
               body: body
             });
 
+      # REJECTED = workflow failure
+      # Note: REJECTED PR comment is handled by caller (needs error logs)
       - name: Fail if REJECTED
         if: steps.normalize.outputs.status == 'REJECTED'
-        run: exit 1
+        run: |
+          echo "Validation REJECTED: ${{ steps.normalize.outputs.reason }}"
+          exit 1
