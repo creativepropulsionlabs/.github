@@ -741,20 +741,28 @@ jobs:
         if: inputs.mode == 'execute' && steps.process.outputs.pr_number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPECTED_PR_TITLE: ${{ steps.context.outputs.expected_pr_title }}
+          OPERATION: ${{ steps.context.outputs.operation }}
+          JOB_TYPE_LABEL: ${{ steps.context.outputs.job_type_label }}
+          SCHEMA_NAME: ${{ steps.context.outputs.schema_name }}
         run: |
           echo "=== Enforcing PR Title ==="
           PR_NUMBER="${{ steps.process.outputs.pr_number }}"
           
-          if [ -z "$EXPECTED_PR_TITLE" ]; then
-            echo "No expected PR title, skipping enforcement"
-            exit 0
+          # Compute PR title dynamically: {Operation} {job_type.label}: {schema.name}
+          # INITCAP the operation (create -> Create, upsert -> Upsert, delete -> Delete)
+          OP_INITCAP=$(echo "$OPERATION" | sed 's/.*/\L&/; s/[a-z]*/\u&/')
+          
+          if [ -n "$SCHEMA_NAME" ]; then
+            EXPECTED_PR_TITLE="${OP_INITCAP} ${JOB_TYPE_LABEL}: ${SCHEMA_NAME}"
+          else
+            EXPECTED_PR_TITLE="${OP_INITCAP} ${JOB_TYPE_LABEL}"
           fi
+          
+          echo "Computed PR title: $EXPECTED_PR_TITLE"
           
           CURRENT_TITLE=$(gh pr view "$PR_NUMBER" --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} --json title -q .title)
           
           echo "Current PR title: $CURRENT_TITLE"
-          echo "Expected PR title: $EXPECTED_PR_TITLE"
           
           if [ "$CURRENT_TITLE" != "$EXPECTED_PR_TITLE" ]; then
             echo "Updating PR title..."
