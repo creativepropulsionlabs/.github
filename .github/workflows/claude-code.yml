@@ -243,11 +243,21 @@ jobs:
           echo "  Expected PR Title: $EXPECTED_PR_TITLE"
           echo "  Canonical Branch: job/${{ inputs.job_id }}"
 
-      - name: Checkout
+      - name: Checkout target repository
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.repo_info.outputs.default_branch }}
           fetch-depth: 0
+
+      - name: Checkout org-level Claude assets
+        uses: actions/checkout@v4
+        with:
+          repository: creativepropulsionlabs/.github
+          ref: master
+          path: .org
+          sparse-checkout: |
+            .github/prompts
+            .github/claude
 
       - name: Branch State (non-destructive)
         if: inputs.mode == 'execute'
