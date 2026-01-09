@@ -1,0 +1,94 @@
+# Reusable Workflow: Next.js CI with Secrets Injection
+# 
+# Per ADR-0010: Canonical secret injection for Next.js builds
+# Called from individual repos via workflow_call
+#
+# Usage in caller repo:
+#   jobs:
+#     build:
+#       uses: creativepropulsionlabs/.github/.github/workflows/web-nextjs-ci.yml@master
+#       secrets: inherit
+
+name: "Next.js CI"
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '20'
+      working-directory:
+        description: 'Working directory for npm commands'
+        required: false
+        type: string
+        default: '.'
+      build-command:
+        description: 'Build command to run'
+        required: false
+        type: string
+        default: 'npm run build'
+      skip-lint:
+        description: 'Skip lint step'
+        required: false
+        type: boolean
+        default: false
+      skip-typecheck:
+        description: 'Skip typecheck step'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build & Validate
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Lint
+        if: ${{ !inputs.skip-lint }}
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run lint --if-present
+
+      - name: Type check
+        if: ${{ !inputs.skip-typecheck }}
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run typecheck --if-present
+
+      - name: Build
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          # ============================================================
+          # CANONICAL SECRET INJECTION (ADR-0010)
+          # These are the ONLY secrets injected for Next.js builds
+          # Runtime stack: nextjs requires NEXT_PUBLIC_* prefix
+          # ============================================================
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          # ============================================================
+        run: ${{ inputs.build-command }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            ${{ inputs.working-directory }}/.next
+            ${{ inputs.working-directory }}/out
+          if-no-files-found: ignore
+          retention-days: 7
