@@ -177,6 +177,9 @@ jobs:
           ALLOWED_PATHS_B64=$(echo "$ALLOWED_PATHS" | base64 -w 0)
           FEEDBACK_HISTORY_B64=$(echo "$FEEDBACK_HISTORY" | base64 -w 0)
           
+          # Extract required_secrets (may be empty - that's valid)
+          REQUIRED_SECRETS=$(echo "$RESPONSE" | jq -c '.required_secrets // []')
+          
           # Set outputs
           {
             echo "job_status=$JOB_STATUS"
