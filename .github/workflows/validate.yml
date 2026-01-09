@@ -47,7 +47,7 @@ on:
         default: ''
 
     secrets:
-      SUPABASE_URL:
+      SUPABASE_PUBLIC_URL:
         required: false
       SUPABASE_ANON_KEY:
         required: false
