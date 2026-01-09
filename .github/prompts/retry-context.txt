@@ -1,0 +1,11 @@
+**WARNING: THIS IS RETRY ATTEMPT {{ATTEMPT_COUNT}}**
+
+Previous attempts failed. The reviewer provided this feedback:
+
+{{FEEDBACK_HISTORY}}
+
+You MUST address ALL issues from prior feedback before proceeding.
+Do NOT repeat the same mistakes.
+
+---
+
