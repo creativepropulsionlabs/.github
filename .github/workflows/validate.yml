@@ -79,7 +79,7 @@ jobs:
 
       # Signal final validation result to n8n webhook
       - name: Signal Validation Result
-        if: inputs.job_id != ''
+        if: inputs.job_id != '' && secrets.N8N_BASE_URL != ''
         run: |
           curl -sf -X POST "${{ secrets.N8N_BASE_URL }}/webhook/validation-result" \
             -H "Content-Type: application/json" \
