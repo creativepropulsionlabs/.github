@@ -48,11 +48,11 @@ on:
 
     secrets:
       SUPABASE_URL:
-        required: true
+        required: false
       SUPABASE_ANON_KEY:
-        required: true
+        required: false
       N8N_BASE_URL:
-        required: true
+        required: false
 
 jobs:
   report:
