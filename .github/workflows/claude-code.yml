@@ -223,25 +223,9 @@ jobs:
           echo "Default branch: $DEFAULT_BRANCH"
           echo "default_branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
 
-      - name: Validate Required Secrets
-        env:
-          REQUIRED_SECRETS: ${{ steps.context.outputs.required_secrets }}
-        run: |
-          echo "=== Validating Required Secrets ==="
-          
-          if [ -z "$REQUIRED_SECRETS" ] || [ "$REQUIRED_SECRETS" = "[]" ] || [ "$REQUIRED_SECRETS" = "null" ]; then
-            echo "No secrets required for this job"
-            exit 0
-          fi
-          
-          # Validate base secret name (not inject_as - that's for deployment-time)
-          for key in $(echo "$REQUIRED_SECRETS" | jq -r '.[].name'); do
-            if [ -z "${!key}" ]; then
-              echo "::error::Required secret '$key' is not present in environment"
-              exit 1
-            fi
-            echo "✓ Found required secret: $key"
-          done
+      # NOTE: Runtime secrets (SUPABASE_*, etc.) are NOT validated here.
+      # This is a code-generation workflow, not deployment.
+      # Runtime secrets are validated in deployment pipelines only.
 
       - name: Validate Required Fields (Execute Mode)
         if: inputs.mode == 'execute'
