@@ -970,6 +970,9 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_JOB_ID: ${{ inputs.job_id }}
           INPUT_RUN_ID: ${{ github.run_id }}
+          PR_URL: ${{ steps.create_pr.outputs.pr_url }}
+          PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
+          BRANCH_NAME: ${{ steps.create_pr.outputs.branch_name }}
         run: |
           echo "=== Posting result to webhook ==="
           
@@ -978,6 +981,15 @@ jobs:
           RETRY_DELAY=2
           
           if [ -f /tmp/claude-result.json ]; then
+            # Add PR info from Create PR step if available
+            if [ -n "$PR_URL" ] && [ "$INPUT_MODE" = "execute" ]; then
+              jq --arg pr_url "$PR_URL" \
+                 --arg pr_number "$PR_NUMBER" \
+                 --arg branch_name "$BRANCH_NAME" \
+                 '. + {pr_url: $pr_url, pr_number: ($pr_number | tonumber), branch_name: $branch_name}' \
+                 /tmp/claude-result.json > /tmp/claude-result-final.json
+              mv /tmp/claude-result-final.json /tmp/claude-result.json
+            fi
             PAYLOAD_FILE="/tmp/claude-result.json"
           else
             jq -n \
