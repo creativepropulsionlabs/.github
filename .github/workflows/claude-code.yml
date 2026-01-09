@@ -389,7 +389,7 @@ jobs:
           echo "$SYSTEM_PROMPT" >> /tmp/system-prompt.txt
           
           # Append execution constraints from file
-          cat .github/prompts/execution-constraints.txt >> /tmp/system-prompt.txt
+          cat .org/.github/prompts/execution-constraints.txt >> /tmp/system-prompt.txt
           
           # Add job context (mechanical substitution)
           echo "" >> /tmp/system-prompt.txt
