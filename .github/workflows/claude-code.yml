@@ -201,6 +201,7 @@ jobs:
             echo "toolset=$TOOLSET"
             echo "max_cost=$MAX_COST"
             echo "feedback_history_b64=$FEEDBACK_HISTORY_B64"
+            echo "required_secrets=$REQUIRED_SECRETS"
           } >> "$GITHUB_OUTPUT"
           
           echo "✓ Job context fetched successfully"
