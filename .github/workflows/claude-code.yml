@@ -430,7 +430,7 @@ jobs:
               exit 1
             fi
           else
-            if [ -f ".github/prompts/review-pr.txt" ]; then
+            if [ -f ".org/.github/prompts/review-pr.txt" ]; then
               # Write acceptance criteria to file for agent to read
               echo "$ACCEPTANCE_CRITERIA" > /tmp/acceptance-criteria.txt
               sed -e "s|{{PR_NUMBER}}|${{ inputs.pr_number }}|g" \
