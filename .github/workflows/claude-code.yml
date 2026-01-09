@@ -416,7 +416,7 @@ jobs:
                   -e "s|{{DEFAULT_BRANCH}}|$DEFAULT_BRANCH|g" \
                   .github/prompts/execute-job.txt >> /tmp/user-message.txt
             else
-              echo "::error::Missing .prompts/execute-job.txt"
+              echo "::error::Missing .github/prompts/execute-job.txt"
               exit 1
             fi
           else
