@@ -393,7 +393,7 @@ jobs:
           : > /tmp/user-message.txt
           
           # Add retry context if attempt > 1
-          if [ "$ATTEMPT_COUNT" -gt 1 ] && [ -f ".prompts/retry-context.txt" ]; then
+          if [ "$ATTEMPT_COUNT" -gt 1 ] && [ -f ".github/prompts/retry-context.txt" ]; then
             echo "Adding retry context (attempt $ATTEMPT_COUNT)..."
             
             # Substitute placeholders in retry template
