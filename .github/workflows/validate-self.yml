@@ -1,0 +1,223 @@
+name: Validate | Workflow Files | Job Pipeline
+
+# IMPORTANT: No paths filter - required checks must run on every PR
+# Internal change detection handles the no-op case
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to comment on'
+        required: false
+        type: string
+      job_id:
+        description: 'Supabase Job UUID for status updates'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    name: Validate Workflow Files
+    runs-on: ubuntu-latest
+    
+    # Outputs for reusable workflow
+    outputs:
+      status: ${{ steps.result.outputs.status }}
+      reason: ${{ steps.result.outputs.reason }}
+      job_id: ${{ steps.job.outputs.job_id }}
+      pr_number: ${{ steps.pr_number.outputs.number }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Derive job_id from branch name - required for webhook signals
+      # Branch naming convention: job/{job_id} (e.g., job/abc-123-def)
+      # Non-job branches (fix/*, infra/*) will have empty job_id - that's OK
+      - name: Resolve Job ID
+        id: job
+        run: |
+          # For PRs, use head ref; for workflow_dispatch, use input or ref
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BRANCH="${{ github.head_ref }}"
+          else
+            # workflow_dispatch - use input if provided
+            if [ -n "${{ inputs.job_id }}" ]; then
+              echo "job_id=${{ inputs.job_id }}" >> $GITHUB_OUTPUT
+              echo "Using provided job_id: ${{ inputs.job_id }}"
+              exit 0
+            fi
+            BRANCH="${{ github.ref_name }}"
+          fi
+          
+          echo "Branch: $BRANCH"
+          
+          # Strict extraction: only job/{id} branches get a job_id
+          # Examples: job/abc-123 → abc-123, fix/something → empty
+          JOB_ID=$(echo "$BRANCH" | sed -n 's|^job/||p')
+          
+          if [ -z "$JOB_ID" ]; then
+            echo "::notice::Non-job branch detected: $BRANCH (webhooks will be skipped)"
+            echo "job_id=" >> $GITHUB_OUTPUT
+          else
+            echo "Resolved job_id: $JOB_ID"
+            echo "job_id=$JOB_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for Source Changes
+        id: changes
+        run: |
+          echo "=== Checking for source file changes ==="
+          
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # For PRs, compare against base branch
+            CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(yml|yaml|md|txt)$' || echo "")
+          else
+            # For workflow_dispatch, assume we need to validate
+            CHANGED="workflow_dispatch_always_validate"
+          fi
+          
+          if [ -z "$CHANGED" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "✓ No source files changed - fast pass"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Source files to validate:"
+            echo "$CHANGED" | head -20
+          fi
+
+      - name: Fast Pass (No Changes)
+        if: steps.changes.outputs.skip == 'true'
+        run: |
+          echo "## ✓ Validation Skipped - No Source Changes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No YAML, Markdown, or text files were modified." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This check passed automatically to satisfy branch protection." >> $GITHUB_STEP_SUMMARY
+
+      # Signal VALIDATING - stays in caller (pre-validation)
+      - name: Signal Validation Started
+        if: steps.job.outputs.job_id != '' && steps.changes.outputs.skip != 'true'
+        run: |
+          curl -X POST "${{ secrets.N8N_BASE_URL }}/webhook/validation-result" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "job_id": "${{ steps.job.outputs.job_id }}",
+              "repo": ".github",
+              "pr_number": ${{ github.event.pull_request.number || inputs.pr_number || 0 }},
+              "status": "VALIDATING"
+            }'
+
+      - name: Setup Python
+        if: steps.changes.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate YAML Syntax
+        id: yaml_check
+        if: steps.changes.outputs.skip != 'true'
+        run: |
+          set -o pipefail
+          echo "## YAML Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Install yamllint
+          pip install yamllint --quiet
+          
+          # Check all workflow files with relaxed rules (GitHub Actions has quirks)
+          if yamllint -d relaxed .github/workflows/*.yml 2>&1 | tee yaml-output.txt; then
+            echo "✅ YAML syntax valid" >> $GITHUB_STEP_SUMMARY
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ YAML syntax errors:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -100 yaml-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Determine overall result
+      # VALIDATED = all checks passed
+      # REJECTED = any check failed
+      # SKIPPED = no source changes (fast pass)
+      - name: Determine Result
+        id: result
+        run: |
+          set -euo pipefail
+          
+          # No changes = SKIPPED (fast pass for branch protection)
+          if [ "${{ steps.changes.outputs.skip }}" == "true" ]; then
+            echo "status=SKIPPED" >> $GITHUB_OUTPUT
+            echo "reason=No source files changed" >> $GITHUB_OUTPUT
+          
+          # YAML check failure = REJECTED
+          elif [ "${{ steps.yaml_check.outputs.passed }}" == "false" ]; then
+            echo "status=REJECTED" >> $GITHUB_OUTPUT
+            echo "reason=YAML syntax errors in workflow files" >> $GITHUB_OUTPUT
+          
+          # Everything passed = VALIDATED
+          else
+            echo "status=VALIDATED" >> $GITHUB_OUTPUT
+          fi
+
+      # PR Number - needed for outputs
+      - name: Get PR Number
+        id: pr_number
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ inputs.pr_number }}" ]; then
+            echo "number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=" >> $GITHUB_OUTPUT
+          fi
+
+      # REJECTED comment - stays in caller (needs error logs on filesystem)
+      - name: Comment on PR (REJECTED)
+        if: steps.pr_number.outputs.number != '' && steps.result.outputs.status == 'REJECTED'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = parseInt('${{ steps.pr_number.outputs.number }}', 10);
+            let body = '## ❌ Validation: REJECTED\n\n';
+            body += '**Reason:** ${{ steps.result.outputs.reason }}\n\n';
+            
+            if (fs.existsSync('yaml-output.txt')) {
+              const yamlOutput = fs.readFileSync('yaml-output.txt', 'utf8');
+              if (yamlOutput.includes('error') || yamlOutput.includes('warning')) {
+                body += '### YAML Errors\n\n```\n' + yamlOutput.slice(-2000) + '\n```\n\n';
+              }
+            }
+            
+            body += '**Review, merge, and deploy are blocked.**\n\n';
+            body += '---\n*Automated validation by GitHub Actions*';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body
+            });
+
+  # Post-validation reporting via reusable workflow
+  # Handles: webhook signal, VALIDATED comment, fail if REJECTED
+  report:
+    name: Report Result
+    needs: validate
+    if: always()
+    uses: creativepropulsionlabs/.github/.github/workflows/validate.yml@master
+    with:
+      repo_name: .github
+      validation_status: ${{ needs.validate.outputs.status }}
+      validation_reason: ${{ needs.validate.outputs.reason || '' }}
+      pr_number: ${{ needs.validate.outputs.pr_number || '' }}
+      job_id: ${{ needs.validate.outputs.job_id || '' }}
+    secrets: inherit
