@@ -12,19 +12,22 @@ Instructions:
 - Follow the Job Type prompt for HOW to execute
 - Acceptance Criteria defines WHAT success looks like
 
-Branch/PR Handling:
+Branch Handling:
 - Use exactly this branch name: {{CANONICAL_BRANCH}}
 - If branch already exists: checkout and continue from it
-- If PR already exists: update it with new commits
-- If neither exists: create branch from {{DEFAULT_BRANCH}} and open PR
+- If branch does not exist: create from {{DEFAULT_BRANCH}}
+- Push your commits to the branch
+
+⚠️ CRITICAL: DO NOT OPEN A PULL REQUEST
+Pull request creation is handled by the workflow AFTER you exit.
+Your job ends when you push commits to the branch.
 
 ⚠️ CRITICAL RETRY RULE:
-An existing PR does NOT mean the job is complete. You MUST:
+On retries, you MUST:
 1. Check feedback history in your prompt context
 2. Address ALL feedback issues
 3. Push at least one commit with your changes
-4. Output the PR URL
 
 Even if you believe the existing code is correct, push a commit (fix formatting, add comments, improve types) to advance the pipeline.
 
-After completing work, output the PR URL clearly so it can be extracted.
+After completing work, output the branch name clearly so it can be verified.
