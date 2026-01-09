@@ -1,8 +1,10 @@
 **WARNING: THIS IS RETRY ATTEMPT {{ATTEMPT_COUNT}}**
 
-Previous attempts failed. The reviewer provided this feedback:
+Previous attempts failed. Feedback history:
 
 {{FEEDBACK_HISTORY}}
+
+⚠️ If feedback above lacks detail, check PR comments for full error output.
 
 You MUST address ALL issues from prior feedback before proceeding.
 Do NOT repeat the same mistakes.
