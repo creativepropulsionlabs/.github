@@ -397,7 +397,7 @@ jobs:
             echo "Adding retry context (attempt $ATTEMPT_COUNT)..."
             
             # Substitute placeholders in retry template
-            sed "s/{{ATTEMPT_COUNT}}/$ATTEMPT_COUNT/g" .prompts/retry-context.txt > /tmp/retry-block.txt
+            sed "s/{{ATTEMPT_COUNT}}/$ATTEMPT_COUNT/g" .github/prompts/retry-context.txt > /tmp/retry-block.txt
             
             # Write feedback history as JSON block
             echo "$FEEDBACK_HISTORY" > /tmp/feedback-raw.txt
