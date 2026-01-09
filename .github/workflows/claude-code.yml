@@ -1,0 +1,1003 @@
+name: Claude Code | Job Pipeline
+
+run-name: "${{ inputs.mode == 'review' && 'Review' || 'Execute' }} | ${{ inputs.job_id }}"
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'execute or review'
+        required: true
+        type: string
+      job_id:
+        description: 'Supabase Job UUID - canonical identifier'
+        required: true
+        type: string
+      webhook_url:
+        description: 'Webhook URL for results'
+        required: true
+        type: string
+      repo_owner:
+        description: 'GitHub org'
+        required: true
+        type: string
+      repo_name:
+        description: 'Repository name'
+        required: true
+        type: string
+      pr_number:
+        description: 'PR number (review mode only)'
+        required: false
+        type: string
+  workflow_dispatch:
+    inputs:
+      # ============================================
+      # V4 LOCKED INPUTS - DO NOT ADD MORE
+      # Everything else comes from Supabase via
+      # get_job_execution_context(job_id)
+      # ============================================
+      mode:
+        description: 'execute or review'
+        required: true
+        type: string
+      job_id:
+        description: 'Supabase Job UUID - canonical identifier'
+        required: true
+        type: string
+      webhook_url:
+        description: 'Webhook URL for results'
+        required: true
+        type: string
+      repo_owner:
+        description: 'GitHub org'
+        required: true
+        type: string
+        default: 'creativepropulsionlabs'
+      repo_name:
+        description: 'Repository name'
+        required: true
+        type: string
+      pr_number:
+        description: 'PR number (review mode only)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: claude-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Job Context from Supabase
+        id: context
+        env:
+          SUPABASE_URL: https://ieghjkbmwvinzopegjgg.supabase.co
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          echo "=== Fetching Job Context from Supabase ==="
+          
+          # Call the RPC to get job execution context
+          RESPONSE=$(curl -s -X POST \
+            "${SUPABASE_URL}/rest/v1/rpc/get_job_execution_context" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Accept-Profile: orchestration" \
+            -H "Content-Profile: orchestration" \
+            -d '{"p_job_id": "${{ inputs.job_id }}"}')
+          
+          echo "Raw response (first 2000 chars):"
+          echo "$RESPONSE" | head -c 2000
+          
+          # Check for errors
+          if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+            echo "::error::Failed to fetch job context: $(echo "$RESPONSE" | jq -r '.error')"
+            exit 1
+          fi
+          
+          # Check if response is null/empty
+          if [ "$RESPONSE" = "null" ] || [ -z "$RESPONSE" ]; then
+            echo "::error::Job not found: ${{ inputs.job_id }}"
+            exit 1
+          fi
+          
+          # Save full context for later steps
+          echo "$RESPONSE" > /tmp/job-context.json
+          
+          # ============================================
+          # V4: Extract from job.payload (THE execution contract)
+          # job.payload contains: task, schema, job_type, execution
+          # ============================================
+          JOB_PAYLOAD=$(echo "$RESPONSE" | jq -c '.job.payload // {}')
+          
+          # Extract job metadata
+          JOB_STATUS=$(echo "$RESPONSE" | jq -r '.job.job_status // "unknown"')
+          AGENT_TYPE=$(echo "$RESPONSE" | jq -r '.job.agent_type // "github_action"')
+          ATTEMPT_COUNT=$(echo "$RESPONSE" | jq -r '.job.attempt_count // 0')
+          MAX_ATTEMPTS=$(echo "$RESPONSE" | jq -r '.job.max_attempts // 3')
+          EXPECTED_PR_TITLE=$(echo "$RESPONSE" | jq -r '.job.expected_pr_title // ""')
+          FEEDBACK_HISTORY=$(echo "$RESPONSE" | jq -c '.job.feedback_history // []')
+          
+          # Extract from payload.job_type (baked at job creation - immutable)
+          # Use new names with fallback to old names for backwards compatibility
+          SYSTEM_PROMPT=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.execution_instructions // .job_type.system_prompt // ""')
+          ACCEPTANCE_CRITERIA_TEMPLATE=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.acceptance_criteria_template // ""')
+          STRATEGY=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.file_protection_override // "ci_guard"')
+          ALLOWED_PATHS=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.allowed_paths_override // ""')
+          JOB_TYPE_SLUG=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.slug // "unknown"')
+          JOB_TYPE_LABEL=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.label // "unknown"')
+          
+          # Extract from payload.task
+          TASK_TITLE=$(echo "$JOB_PAYLOAD" | jq -r '.task.title // ""')
+          TASK_ACCEPTANCE_CRITERIA=$(echo "$JOB_PAYLOAD" | jq -r '.task.acceptance_criteria // ""')
+          
+          # Use task acceptance_criteria if set, otherwise use template
+          if [ -n "$TASK_ACCEPTANCE_CRITERIA" ]; then
+            ACCEPTANCE_CRITERIA="$TASK_ACCEPTANCE_CRITERIA"
+          else
+            ACCEPTANCE_CRITERIA="$ACCEPTANCE_CRITERIA_TEMPLATE"
+          fi
+          
+          # Model/provider from payload.job_type (baked at job creation)
+          MODEL=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.ai_model // "claude-sonnet-4-20250514"')
+          PROVIDER=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.ai_provider // "anthropic"')
+          MAX_COST=$(echo "$JOB_PAYLOAD" | jq -r '.job_type.max_cost_usd // "2.00"')
+          
+          # Toolset from payload.job_type (new: toolset_prefixes, old: required_mcp_tools)
+          TOOLSET=$(echo "$JOB_PAYLOAD" | jq -r '(.job_type.toolset_prefixes // .job_type.required_mcp_tools // []) | join(",")')
+          
+          echo "=== Extracted Context ==="
+          echo "Job Status: $JOB_STATUS"
+          echo "Job Type: $JOB_TYPE_SLUG"
+          echo "Task: $TASK_TITLE"
+          echo "Model: $MODEL"
+          echo "Strategy: $STRATEGY"
+          echo "Expected PR Title: $EXPECTED_PR_TITLE"
+          echo "System Prompt Length: ${#SYSTEM_PROMPT}"
+          echo "Acceptance Criteria Length: ${#ACCEPTANCE_CRITERIA}"
+          echo "Attempt Count: $ATTEMPT_COUNT"
+          echo "Feedback History: $FEEDBACK_HISTORY"
+          
+          # Base64 encode multiline fields for safe transport
+          SYSTEM_PROMPT_B64=$(echo "$SYSTEM_PROMPT" | base64 -w 0)
+          ACCEPTANCE_CRITERIA_B64=$(echo "$ACCEPTANCE_CRITERIA" | base64 -w 0)
+          JOB_PAYLOAD_B64=$(echo "$JOB_PAYLOAD" | base64 -w 0)
+          ALLOWED_PATHS_B64=$(echo "$ALLOWED_PATHS" | base64 -w 0)
+          FEEDBACK_HISTORY_B64=$(echo "$FEEDBACK_HISTORY" | base64 -w 0)
+          
+          # Set outputs
+          {
+            echo "job_status=$JOB_STATUS"
+            echo "agent_type=$AGENT_TYPE"
+            echo "attempt_count=$ATTEMPT_COUNT"
+            echo "max_attempts=$MAX_ATTEMPTS"
+            echo "job_type_slug=$JOB_TYPE_SLUG"
+            echo "job_type_label=$JOB_TYPE_LABEL"
+            echo "system_prompt_b64=$SYSTEM_PROMPT_B64"
+            echo "task_title=$TASK_TITLE"
+            echo "acceptance_criteria_b64=$ACCEPTANCE_CRITERIA_B64"
+            echo "job_payload_b64=$JOB_PAYLOAD_B64"
+            echo "strategy=$STRATEGY"
+            echo "allowed_paths_b64=$ALLOWED_PATHS_B64"
+            echo "expected_pr_title=$EXPECTED_PR_TITLE"
+            echo "model=$MODEL"
+            echo "provider=$PROVIDER"
+            echo "toolset=$TOOLSET"
+            echo "max_cost=$MAX_COST"
+            echo "feedback_history_b64=$FEEDBACK_HISTORY_B64"
+          } >> "$GITHUB_OUTPUT"
+          
+          echo "✓ Job context fetched successfully"
+
+      - name: Get Default Branch
+        id: repo_info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Getting Repository Default Branch ==="
+          
+          DEFAULT_BRANCH=$(gh api "repos/${{ inputs.repo_owner }}/${{ inputs.repo_name }}" --jq '.default_branch')
+          
+          if [ -z "$DEFAULT_BRANCH" ]; then
+            echo "::warning::Could not determine default branch, using 'master'"
+            DEFAULT_BRANCH="master"
+          fi
+          
+          echo "Default branch: $DEFAULT_BRANCH"
+          echo "default_branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Required Fields (Execute Mode)
+        if: inputs.mode == 'execute'
+        env:
+          EXPECTED_PR_TITLE: ${{ steps.context.outputs.expected_pr_title }}
+          SYSTEM_PROMPT_B64: ${{ steps.context.outputs.system_prompt_b64 }}
+        run: |
+          echo "=== Validating Required Fields ==="
+          
+          ERRORS=""
+          
+          if [ -z "$EXPECTED_PR_TITLE" ]; then
+            ERRORS="${ERRORS}Missing expected_pr_title\n"
+          fi
+          
+          # Decode and check system prompt
+          SYSTEM_PROMPT=$(echo "$SYSTEM_PROMPT_B64" | base64 --decode)
+          if [ -z "$SYSTEM_PROMPT" ]; then
+            echo "::warning::No system_prompt in job payload - job may have been created before V4 migration"
+          fi
+          
+          if [ -n "$ERRORS" ]; then
+            echo "::error::Validation failed:"
+            echo -e "$ERRORS"
+            exit 1
+          fi
+          
+          echo "✓ All required fields present"
+          echo "  Expected PR Title: $EXPECTED_PR_TITLE"
+          echo "  Canonical Branch: job/${{ inputs.job_id }}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.repo_info.outputs.default_branch }}
+          fetch-depth: 0
+
+      - name: Branch State (non-destructive)
+        if: inputs.mode == 'execute'
+        run: |
+          echo "Branch: job/${{ inputs.job_id }}"
+          echo "Retries push to existing branch. No cleanup."
+
+      - name: Apply File Protection
+        id: file_protection
+        env:
+          STRATEGY: ${{ steps.context.outputs.strategy }}
+          ALLOWED_PATHS_B64: ${{ steps.context.outputs.allowed_paths_b64 }}
+        run: |
+          echo "=== File Protection ==="
+          echo "Strategy: $STRATEGY"
+          
+          # Decode base64 allowed_paths
+          ALLOWED_PATHS=$(echo "$ALLOWED_PATHS_B64" | base64 --decode)
+          echo "Allowed Paths (decoded): $ALLOWED_PATHS"
+          
+          if [ "$STRATEGY" = "sparse_checkout" ]; then
+            # CRITICAL: Fail-fast guard - sparse_checkout REQUIRES allowed_paths
+            if [ -z "$ALLOWED_PATHS" ]; then
+              echo "::error::sparse_checkout strategy requires allowed_paths to be set"
+              exit 1
+            fi
+            
+            echo "Enabling sparse checkout (non-cone mode for exact path matching)..."
+            git sparse-checkout init
+            
+            # Convert newlines to spaces for git sparse-checkout set command
+            PATHS=$(echo "$ALLOWED_PATHS" | tr '\n' ' ' | xargs)
+            
+            echo "Setting sparse checkout paths: $PATHS"
+            git sparse-checkout set $PATHS
+            
+            echo "Sparse checkout enabled. Visible files:"
+            find . -type f -name "*.ts" -o -name "*.js" -o -name "*.json" 2>/dev/null | head -20 || echo "(no matching files found)"
+            
+            echo "sparse_checkout_enabled=true" >> $GITHUB_OUTPUT
+          else
+            echo "File protection strategy: $STRATEGY (no sparse checkout)"
+            echo "sparse_checkout_enabled=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure Git
+        run: |
+          git config user.name "Claude Code"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create MCP Config
+        env:
+          MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
+        run: |
+          cat > /tmp/mcp.json << 'EOF'
+          {
+            "mcpServers": {
+              "mixplaces": {
+                "command": "npx",
+                "args": ["-y", "@anthropic-ai/mcp-proxy", "https://mixplaces-mcp-servers.vercel.app/api/sse"],
+                "env": {
+                  "MCP_API_KEY": "${{ secrets.MCP_API_KEY }}"
+                }
+              }
+            }
+          }
+          EOF
+
+      - name: Build Allowed Tools
+        id: tools
+        env:
+          TOOLSET: ${{ steps.context.outputs.toolset }}
+        run: |
+          # TOOLSET comes from payload.job_type.toolset_prefixes (comma-separated)
+          if [ -n "$TOOLSET" ] && [ "$TOOLSET" != "none" ]; then
+            # Convert comma-separated to space-separated with wildcards
+            ALLOWED=$(echo "$TOOLSET" | tr ',' '\n' | sed 's/$/_*/' | tr '\n' ' ')
+            echo "Using toolset wildcards: $ALLOWED"
+          else
+            ALLOWED="__none__"
+            echo "No MCP tools (shell only mode)"
+          fi
+          
+          echo "allowed_tools=$ALLOWED" >> $GITHUB_OUTPUT
+
+      - name: Build Prompts
+        env:
+          SYSTEM_PROMPT_B64: ${{ steps.context.outputs.system_prompt_b64 }}
+          ACCEPTANCE_CRITERIA_B64: ${{ steps.context.outputs.acceptance_criteria_b64 }}
+          JOB_PAYLOAD_B64: ${{ steps.context.outputs.job_payload_b64 }}
+          FEEDBACK_HISTORY_B64: ${{ steps.context.outputs.feedback_history_b64 }}
+          ATTEMPT_COUNT: ${{ steps.context.outputs.attempt_count }}
+          DEFAULT_BRANCH: ${{ steps.repo_info.outputs.default_branch }}
+        run: |
+          echo "=== Building Prompts ==="
+          
+          # Decode base64 fields
+          SYSTEM_PROMPT=$(echo "$SYSTEM_PROMPT_B64" | base64 --decode)
+          ACCEPTANCE_CRITERIA=$(echo "$ACCEPTANCE_CRITERIA_B64" | base64 --decode)
+          JOB_PAYLOAD=$(echo "$JOB_PAYLOAD_B64" | base64 --decode)
+          FEEDBACK_HISTORY=$(echo "$FEEDBACK_HISTORY_B64" | base64 --decode)
+          
+          # Canonical branch name
+          CANONICAL_BRANCH="job/${{ inputs.job_id }}"
+          
+          echo "Attempt: $ATTEMPT_COUNT"
+          echo "Canonical Branch: $CANONICAL_BRANCH"
+          
+          # === Build System Prompt ===
+          # Start with CONTRIBUTING.md if present
+          if [ -f "CONTRIBUTING.md" ]; then
+            cat CONTRIBUTING.md > /tmp/system-prompt.txt
+            echo "" >> /tmp/system-prompt.txt
+            echo "---" >> /tmp/system-prompt.txt
+            echo "" >> /tmp/system-prompt.txt
+          else
+            : > /tmp/system-prompt.txt
+          fi
+          
+          # Append job type system prompt
+          echo "$SYSTEM_PROMPT" >> /tmp/system-prompt.txt
+          
+          # Append execution constraints from file
+          cat .prompts/execution-constraints.txt >> /tmp/system-prompt.txt
+          
+          # Add job context (mechanical substitution)
+          echo "" >> /tmp/system-prompt.txt
+          echo "- Job ID: ${{ inputs.job_id }}" >> /tmp/system-prompt.txt
+          echo "- Mode: ${{ inputs.mode }}" >> /tmp/system-prompt.txt
+          echo "- Repository: ${{ inputs.repo_owner }}/${{ inputs.repo_name }}" >> /tmp/system-prompt.txt
+          echo "- Default Branch: $DEFAULT_BRANCH" >> /tmp/system-prompt.txt
+          
+          # === Build User Message ===
+          # Start fresh
+          : > /tmp/user-message.txt
+          
+          # Add retry context if attempt > 1
+          if [ "$ATTEMPT_COUNT" -gt 1 ] && [ -f ".prompts/retry-context.txt" ]; then
+            echo "Adding retry context (attempt $ATTEMPT_COUNT)..."
+            
+            # Substitute placeholders in retry template
+            sed "s/{{ATTEMPT_COUNT}}/$ATTEMPT_COUNT/g" .prompts/retry-context.txt > /tmp/retry-block.txt
+            
+            # Write feedback history as JSON block
+            echo "$FEEDBACK_HISTORY" > /tmp/feedback-raw.txt
+            sed -i "s|{{FEEDBACK_HISTORY}}|$(cat /tmp/feedback-raw.txt)|g" /tmp/retry-block.txt
+            
+            cat /tmp/retry-block.txt >> /tmp/user-message.txt
+          fi
+          
+          # Add mode-specific prompt from external file
+          if [ "${{ inputs.mode }}" = "execute" ]; then
+            if [ -f ".prompts/execute-job.txt" ]; then
+              # Write acceptance criteria to file for agent to read
+              echo "$ACCEPTANCE_CRITERIA" > /tmp/acceptance-criteria.txt
+              # Substitute only simple placeholders (no multiline content)
+              sed -e "s|{{CANONICAL_BRANCH}}|$CANONICAL_BRANCH|g" \
+                  -e "s|{{DEFAULT_BRANCH}}|$DEFAULT_BRANCH|g" \
+                  .prompts/execute-job.txt >> /tmp/user-message.txt
+            else
+              echo "::error::Missing .prompts/execute-job.txt"
+              exit 1
+            fi
+          else
+            if [ -f ".prompts/review-pr.txt" ]; then
+              # Write acceptance criteria to file for agent to read
+              echo "$ACCEPTANCE_CRITERIA" > /tmp/acceptance-criteria.txt
+              sed -e "s|{{PR_NUMBER}}|${{ inputs.pr_number }}|g" \
+                  -e "s|{{REPO_OWNER}}|${{ inputs.repo_owner }}|g" \
+                  -e "s|{{REPO_NAME}}|${{ inputs.repo_name }}|g" \
+                  .prompts/review-pr.txt >> /tmp/user-message.txt
+            else
+              echo "::error::Missing .prompts/review-pr.txt"
+              exit 1
+            fi
+          fi
+          
+          # Save payload for Process Output step and for agent to read
+          echo "$JOB_PAYLOAD" > /tmp/job-payload.json
+          
+          echo "=== Prompt Build Complete ==="
+          echo "System prompt size: $(wc -c < /tmp/system-prompt.txt) bytes"
+          echo "User message size: $(wc -c < /tmp/user-message.txt) bytes"
+
+      - name: Run Claude Code
+        id: claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          MODEL: ${{ steps.context.outputs.model }}
+        run: |
+          ALLOWED_TOOLS="${{ steps.tools.outputs.allowed_tools }}"
+          
+          echo "=== Starting Claude Code ==="
+          echo "Mode: ${{ inputs.mode }}"
+          echo "Job ID: ${{ inputs.job_id }}"
+          echo "Model: $MODEL"
+          echo "Allowed Tools: $ALLOWED_TOOLS"
+          echo "Canonical Branch: job/${{ inputs.job_id }}"
+          echo "Sparse Checkout: ${{ steps.file_protection.outputs.sparse_checkout_enabled }}"
+          
+          CMD=(claude --print --output-format json)
+          
+          if [ "$ALLOWED_TOOLS" != "__none__" ]; then
+            CMD+=(--mcp-config /tmp/mcp.json)
+            CMD+=(--allowed-tools "$ALLOWED_TOOLS")
+          fi
+          
+          CMD+=(--system-prompt "$(cat /tmp/system-prompt.txt)")
+          CMD+=(--model "$MODEL")
+          CMD+=(--dangerously-skip-permissions)
+          CMD+=(--max-budget-usd "${{ steps.context.outputs.max_cost }}")
+          
+          echo "Running Claude Code..."
+          set +e
+          CLAUDE_OUTPUT=$(cat /tmp/user-message.txt | "${CMD[@]}" 2>&1)
+          CLAUDE_EXIT_CODE=$?
+          set -e
+          
+          echo "=== Claude Code Output ==="
+          echo "$CLAUDE_OUTPUT"
+          echo "Exit code: $CLAUDE_EXIT_CODE"
+          
+          echo "$CLAUDE_OUTPUT" > /tmp/claude-raw-output.txt
+
+      - name: Process Output
+        id: process
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_JOB_ID: ${{ inputs.job_id }}
+          INPUT_RUN_ID: ${{ github.run_id }}
+          INPUT_TOOLSET: ${{ steps.context.outputs.toolset }}
+          INPUT_PROVIDER: ${{ steps.context.outputs.provider }}
+          INPUT_MODEL: ${{ steps.context.outputs.model }}
+          INPUT_REPO_OWNER: ${{ inputs.repo_owner }}
+          INPUT_REPO_NAME: ${{ inputs.repo_name }}
+        run: |
+          echo "=== Processing Claude Code Output ==="
+          
+          CLAUDE_OUTPUT=$(cat /tmp/claude-raw-output.txt)
+          CLAUDE_JSON=$(echo "$CLAUDE_OUTPUT" | grep -o '{"type":"result".*}' | head -1 || echo "")
+          
+          if [ -f /tmp/job-payload.json ]; then
+            cat /tmp/job-payload.json | head -c 50000 > /tmp/input-args-content.txt
+          else
+            echo "{}" > /tmp/input-args-content.txt
+          fi
+          
+          if [ -z "$CLAUDE_JSON" ]; then
+            echo "WARNING: Could not extract JSON from Claude Code output"
+            cat /tmp/claude-raw-output.txt
+            
+            jq -n \
+              --arg status "error" \
+              --arg mode "$INPUT_MODE" \
+              --arg job_id "$INPUT_JOB_ID" \
+              --arg run_id "$INPUT_RUN_ID" \
+              --arg agent_type "github_action" \
+              --arg toolset "$INPUT_TOOLSET" \
+              --rawfile input_args /tmp/input-args-content.txt \
+              --arg error "Failed to parse Claude Code output" \
+              --arg provider "$INPUT_PROVIDER" \
+              --arg model "$INPUT_MODEL" \
+              '{
+                status: $status,
+                mode: $mode,
+                job_id: $job_id,
+                run_id: $run_id,
+                agent_type: $agent_type,
+                toolset: $toolset,
+                input_args: $input_args,
+                error: $error,
+                provider: $provider,
+                model: $model
+              }' > /tmp/claude-result.json
+            
+            echo "Generated error payload:"
+            cat /tmp/claude-result.json
+            exit 0
+          fi
+          
+          echo "Extracted JSON:"
+          echo "$CLAUDE_JSON" | head -500
+          
+          IS_ERROR=$(echo "$CLAUDE_JSON" | jq -r '.is_error // false')
+          DURATION_MS=$(echo "$CLAUDE_JSON" | jq -r '.duration_ms // 0')
+          TOTAL_COST=$(echo "$CLAUDE_JSON" | jq -r '.total_cost_usd // 0')
+          INPUT_TOKENS=$(echo "$CLAUDE_JSON" | jq -r '.usage.input_tokens // 0')
+          OUTPUT_TOKENS=$(echo "$CLAUDE_JSON" | jq -r '.usage.output_tokens // 0')
+          RESULT_TEXT=$(echo "$CLAUDE_JSON" | jq -r '.result // ""')
+          
+          echo "$RESULT_TEXT" | head -c 50000 > /tmp/output-result-content.txt
+          
+          echo "Parsed metrics:"
+          echo "  is_error: $IS_ERROR"
+          echo "  duration_ms: $DURATION_MS"
+          echo "  total_cost_usd: $TOTAL_COST"
+          echo "  input_tokens: $INPUT_TOKENS"
+          echo "  output_tokens: $OUTPUT_TOKENS"
+          echo "  result_length: ${#RESULT_TEXT}"
+          
+          if [ "$IS_ERROR" = "true" ]; then
+            STATUS="error"
+          else
+            STATUS="success"
+          fi
+          
+          if [ "$INPUT_MODE" = "execute" ]; then
+            PR_URL=$(echo "$RESULT_TEXT" | grep -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' | head -1 || echo "")
+            PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$' || echo "")
+            
+            ERROR_MSG=""
+            if [ -z "$PR_URL" ] && [ "$STATUS" = "success" ]; then
+              echo "WARNING: No PR URL found in successful execute result"
+              STATUS="error"
+              ERROR_MSG="Execute completed but no PR URL found in output"
+            fi
+            
+            echo "Execute mode - PR URL: $PR_URL, PR Number: $PR_NUMBER"
+            
+            # Always use canonical branch name
+            BRANCH_NAME="job/$INPUT_JOB_ID"
+            
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+            
+            jq -n \
+              --arg status "$STATUS" \
+              --arg mode "execute" \
+              --arg job_id "$INPUT_JOB_ID" \
+              --arg run_id "$INPUT_RUN_ID" \
+              --arg agent_type "github_action" \
+              --arg toolset "$INPUT_TOOLSET" \
+              --rawfile input_args /tmp/input-args-content.txt \
+              --rawfile output_result /tmp/output-result-content.txt \
+              --arg pr_url "$PR_URL" \
+              --arg pr_number "$PR_NUMBER" \
+              --arg branch_name "$BRANCH_NAME" \
+              --argjson input_tokens "$INPUT_TOKENS" \
+              --argjson output_tokens "$OUTPUT_TOKENS" \
+              --argjson cost_usd "$TOTAL_COST" \
+              --argjson duration_ms "$DURATION_MS" \
+              --arg provider "$INPUT_PROVIDER" \
+              --arg model "$INPUT_MODEL" \
+              --argjson iterations 1 \
+              --arg error "$ERROR_MSG" \
+              '{
+                status: $status,
+                mode: $mode,
+                job_id: $job_id,
+                run_id: $run_id,
+                agent_type: $agent_type,
+                toolset: $toolset,
+                input_args: $input_args,
+                output_result: $output_result,
+                pr_url: $pr_url,
+                pr_number: (if $pr_number == "" then null else ($pr_number | tonumber) end),
+                branch_name: $branch_name,
+                usage: { input: $input_tokens, output: $output_tokens },
+                cost_usd: $cost_usd,
+                duration_ms: $duration_ms,
+                provider: $provider,
+                model: $model,
+                iterations: $iterations,
+                error: (if $error == "" then null else $error end)
+              }' > /tmp/claude-result.json
+          
+          else
+            echo "$RESULT_TEXT" > /tmp/result-text.txt
+            
+            VERDICT_DATA=$(python3 << 'PYTHON_EOF'
+          import re
+          import json
+          
+          with open('/tmp/result-text.txt', 'r') as f:
+              text = f.read()
+          
+          result = {"verdict": "unknown", "summary": "Could not parse verdict from response", "issues": []}
+          
+          code_blocks = re.findall(r'```(?:json)?\s*(\{[^`]+\})\s*```', text, re.DOTALL)
+          for block in code_blocks:
+              try:
+                  parsed = json.loads(block)
+                  if "verdict" in parsed:
+                      result = {
+                          "verdict": parsed.get("verdict", "unknown"),
+                          "summary": parsed.get("summary", ""),
+                          "issues": parsed.get("issues", [])
+                      }
+                      break
+              except json.JSONDecodeError:
+                  continue
+          
+          if result["verdict"] == "unknown":
+              json_pattern = r'\{[^{}]*(?:\[[^\[\]]*\][^{}]*)?"verdict"[^{}]*(?:\[[^\[\]]*\][^{}]*)?\}'
+              matches = re.findall(json_pattern, text)
+              for match in matches:
+                  try:
+                      parsed = json.loads(match)
+                      if "verdict" in parsed:
+                          result = {
+                              "verdict": parsed.get("verdict", "unknown"),
+                              "summary": parsed.get("summary", ""),
+                              "issues": parsed.get("issues", [])
+                          }
+                          break
+                  except json.JSONDecodeError:
+                      continue
+          
+          print(json.dumps(result))
+          PYTHON_EOF
+          )
+            
+            echo "Extracted verdict data: $VERDICT_DATA"
+            
+            VERDICT=$(echo "$VERDICT_DATA" | jq -r '.verdict // "unknown"')
+            SUMMARY=$(echo "$VERDICT_DATA" | jq -r '.summary // ""')
+            ISSUES=$(echo "$VERDICT_DATA" | jq -c '.issues // []')
+            
+            case "$VERDICT" in
+              approve|approved|APPROVE|APPROVED) VERDICT="approved" ;;
+              request_changes|changes_requested|REQUEST_CHANGES) VERDICT="changes_requested" ;;
+              reject|rejected|REJECT|REJECTED) VERDICT="rejected" ;;
+              *) VERDICT="unknown" ;;
+            esac
+            
+            echo "Review mode - Verdict: $VERDICT"
+            
+            echo "$SUMMARY" > /tmp/summary-content.txt
+            
+            jq -n \
+              --arg status "$STATUS" \
+              --arg mode "review" \
+              --arg job_id "$INPUT_JOB_ID" \
+              --arg run_id "$INPUT_RUN_ID" \
+              --arg agent_type "github_action" \
+              --arg toolset "$INPUT_TOOLSET" \
+              --rawfile input_args /tmp/input-args-content.txt \
+              --rawfile output_result /tmp/output-result-content.txt \
+              --arg verdict "$VERDICT" \
+              --rawfile summary /tmp/summary-content.txt \
+              --argjson issues "$ISSUES" \
+              --argjson input_tokens "$INPUT_TOKENS" \
+              --argjson output_tokens "$OUTPUT_TOKENS" \
+              --argjson cost_usd "$TOTAL_COST" \
+              --argjson duration_ms "$DURATION_MS" \
+              --arg provider "$INPUT_PROVIDER" \
+              --arg model "$INPUT_MODEL" \
+              '{
+                status: $status,
+                mode: $mode,
+                job_id: $job_id,
+                run_id: $run_id,
+                agent_type: $agent_type,
+                toolset: $toolset,
+                input_args: $input_args,
+                output_result: $output_result,
+                verdict: $verdict,
+                summary: $summary,
+                issues: $issues,
+                usage: { input: $input_tokens, output: $output_tokens },
+                cost_usd: $cost_usd,
+                duration_ms: $duration_ms,
+                provider: $provider,
+                model: $model
+              }' > /tmp/claude-result.json
+          fi
+          
+          echo "=== Final Result ==="
+          cat /tmp/claude-result.json
+          
+          if ! jq empty /tmp/claude-result.json 2>/dev/null; then
+            echo "::error::Generated JSON is invalid!"
+            cat /tmp/claude-result.json
+            exit 1
+          fi
+          echo "✓ JSON validation passed"
+
+      - name: Enforce PR Title
+        if: inputs.mode == 'execute' && steps.process.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_PR_TITLE: ${{ steps.context.outputs.expected_pr_title }}
+        run: |
+          echo "=== Enforcing PR Title ==="
+          PR_NUMBER="${{ steps.process.outputs.pr_number }}"
+          
+          if [ -z "$EXPECTED_PR_TITLE" ]; then
+            echo "No expected PR title, skipping enforcement"
+            exit 0
+          fi
+          
+          CURRENT_TITLE=$(gh pr view "$PR_NUMBER" --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} --json title -q .title)
+          
+          echo "Current PR title: $CURRENT_TITLE"
+          echo "Expected PR title: $EXPECTED_PR_TITLE"
+          
+          if [ "$CURRENT_TITLE" != "$EXPECTED_PR_TITLE" ]; then
+            echo "Updating PR title..."
+            gh pr edit "$PR_NUMBER" --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} --title "$EXPECTED_PR_TITLE"
+            echo "✅ PR title updated to: $EXPECTED_PR_TITLE"
+          else
+            echo "✅ PR title already correct"
+          fi
+
+      - name: Trigger Validation Workflow
+        if: inputs.mode == 'execute' && steps.process.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Triggering Validation Workflow ==="
+          gh workflow run validate.yml \
+            --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
+            -f pr_number="${{ steps.process.outputs.pr_number }}" \
+            -f job_id="${{ inputs.job_id }}"
+          echo "✅ Validation workflow triggered"
+
+      - name: Submit GitHub PR Review
+        id: pr_review
+        if: inputs.mode == 'review' && inputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Submitting GitHub PR Review ==="
+          
+          if [ ! -f /tmp/claude-result.json ]; then
+            echo "No result file, skipping PR review"
+            echo "review_posted=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          PR_STATE=$(gh pr view ${{ inputs.pr_number }} \
+            --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
+            --json state -q .state 2>/dev/null || echo "UNKNOWN")
+          
+          echo "PR #${{ inputs.pr_number }} state: $PR_STATE"
+          
+          if [ "$PR_STATE" != "OPEN" ]; then
+            echo "PR is $PR_STATE (not OPEN), skipping review"
+            echo "review_posted=skipped" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          VERDICT=$(jq -r '.verdict // "unknown"' /tmp/claude-result.json)
+          SUMMARY=$(jq -r '.summary // ""' /tmp/claude-result.json)
+          ISSUES=$(jq -r '.issues // [] | map("**\(.file):\(.line // "?")** - \(.description)") | join("\n- ")' /tmp/claude-result.json)
+          
+          REVIEW_BODY="## AI Code Review
+
+          "
+          if [ -n "$SUMMARY" ]; then
+            REVIEW_BODY="${REVIEW_BODY}**Summary:** ${SUMMARY}
+
+          "
+          fi
+          if [ -n "$ISSUES" ]; then
+            REVIEW_BODY="${REVIEW_BODY}**Issues:**
+          - ${ISSUES}
+
+          "
+          fi
+          REVIEW_BODY="${REVIEW_BODY}---
+          *Automated review by Claude Code (Job #${{ inputs.job_id }})*"
+          
+          echo "Verdict: $VERDICT"
+          
+          post_review() {
+            local REVIEW_TYPE="$1"
+            local REVIEW_FLAG="$2"
+            
+            if echo "$REVIEW_BODY" | gh pr review ${{ inputs.pr_number }} \
+              --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
+              $REVIEW_FLAG \
+              --body-file - 2>/dev/null; then
+              echo "✅ PR review posted successfully"
+              echo "review_posted=true" >> $GITHUB_OUTPUT
+              return 0
+            fi
+            
+            echo "⚠️ PR review failed, falling back to comment..."
+            if echo "$REVIEW_BODY" | gh pr comment ${{ inputs.pr_number }} \
+              --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
+              --body-file -; then
+              echo "✅ PR comment posted as fallback"
+              echo "review_posted=comment_fallback" >> $GITHUB_OUTPUT
+              return 0
+            fi
+            
+            echo "❌ Both PR review and comment failed"
+            echo "review_posted=false" >> $GITHUB_OUTPUT
+            return 1
+          }
+          
+          case "$VERDICT" in
+            approved)
+              post_review "APPROVE" "--approve"
+              ;;
+            changes_requested)
+              post_review "REQUEST_CHANGES" "--request-changes"
+              ;;
+            rejected)
+              REVIEW_BODY="## ❌ PR Rejected
+
+          ${REVIEW_BODY}"
+              post_review "COMMENT" "--comment"
+              ;;
+            *)
+              post_review "COMMENT" "--comment"
+              ;;
+          esac
+
+      - name: Cleanup Sparse Checkout
+        if: always()
+        run: |
+          if [ "${{ steps.file_protection.outputs.sparse_checkout_enabled }}" = "true" ]; then
+            git sparse-checkout disable || true
+          fi
+
+      - name: Log AI Cost to Supabase
+        if: always()
+        env:
+          N8N_WEBHOOK_URL: ${{ secrets.N8N_BASE_URL }}/webhook/ai-cost
+        run: |
+          echo "=== Logging AI Cost to Supabase ==="
+          
+          if [ ! -f /tmp/claude-result.json ]; then
+            echo "No result file, skipping AI cost logging"
+            exit 0
+          fi
+          
+          # Extract fields from result
+          STATUS=$(jq -r '.status // "error"' /tmp/claude-result.json)
+          MODE=$(jq -r '.mode // "execute"' /tmp/claude-result.json)
+          JOB_ID=$(jq -r '.job_id // ""' /tmp/claude-result.json)
+          INPUT_TOKENS=$(jq -r '.usage.input // 0' /tmp/claude-result.json)
+          OUTPUT_TOKENS=$(jq -r '.usage.output // 0' /tmp/claude-result.json)
+          DURATION_MS=$(jq -r '.duration_ms // 0' /tmp/claude-result.json)
+          PROVIDER=$(jq -r '.provider // "anthropic"' /tmp/claude-result.json)
+          MODEL=$(jq -r '.model // "claude-sonnet-4-20250514"' /tmp/claude-result.json)
+          ERROR_MSG=$(jq -r '.error // ""' /tmp/claude-result.json)
+          
+          # Build AI cost payload
+          jq -n \
+            --arg mode "$MODE" \
+            --arg job_id "$JOB_ID" \
+            --arg status "$STATUS" \
+            --argjson input "$INPUT_TOKENS" \
+            --argjson output "$OUTPUT_TOKENS" \
+            --argjson duration_ms "$DURATION_MS" \
+            --arg provider "$PROVIDER" \
+            --arg model "$MODEL" \
+            --arg error "$ERROR_MSG" \
+            '{
+              mode: $mode,
+              job_id: $job_id,
+              status: $status,
+              usage: { input: $input, output: $output },
+              duration_ms: $duration_ms,
+              provider: $provider,
+              model: $model,
+              error: (if $error == "" then null else $error end)
+            }' > /tmp/ai-cost-payload.json
+          
+          echo "AI Cost Payload:"
+          cat /tmp/ai-cost-payload.json
+          
+          # POST to AI cost logger webhook (fire and forget, don't fail workflow)
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o /tmp/ai-cost-response.txt \
+            -X POST "$N8N_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/ai-cost-payload.json \
+            --connect-timeout 5 \
+            --max-time 10 || echo "000")
+          
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✅ AI cost logged successfully (HTTP $HTTP_CODE)"
+            cat /tmp/ai-cost-response.txt
+          else
+            echo "⚠️ AI cost logging failed (HTTP $HTTP_CODE) - continuing anyway"
+            cat /tmp/ai-cost-response.txt 2>/dev/null || true
+          fi
+
+      - name: POST to Result Webhook
+        if: always()
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_JOB_ID: ${{ inputs.job_id }}
+          INPUT_RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "=== Posting result to webhook ==="
+          
+          WEBHOOK_URL="${{ inputs.webhook_url }}"
+          MAX_RETRIES=3
+          RETRY_DELAY=2
+          
+          if [ -f /tmp/claude-result.json ]; then
+            PAYLOAD_FILE="/tmp/claude-result.json"
+          else
+            jq -n \
+              --arg status "error" \
+              --arg mode "$INPUT_MODE" \
+              --arg job_id "$INPUT_JOB_ID" \
+              --arg run_id "$INPUT_RUN_ID" \
+              --arg agent_type "github_action" \
+              --arg error "No result file generated" \
+              '{
+                status: $status,
+                mode: $mode,
+                job_id: $job_id,
+                run_id: $run_id,
+                agent_type: $agent_type,
+                error: $error
+              }' > /tmp/error-payload.json
+            PAYLOAD_FILE="/tmp/error-payload.json"
+          fi
+          
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d @"$PAYLOAD_FILE" \
+              --connect-timeout 10 \
+              --max-time 30)
+            
+            HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -1)
+            
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Webhook POST successful (HTTP $HTTP_CODE)"
+              exit 0
+            fi
+            
+            echo "❌ Webhook POST failed (HTTP $HTTP_CODE)"
+            
+            if [ "$HTTP_CODE" -ge 400 ] && [ "$HTTP_CODE" -lt 500 ] && [ "$HTTP_CODE" -ne 429 ]; then
+              echo "::error::Client error - not retrying"
+              break
+            fi
+            
+            if [ $attempt -lt $MAX_RETRIES ]; then
+              sleep $((RETRY_DELAY * attempt))
+            fi
+          done
+          
+          echo "::error::Webhook POST failed after $MAX_RETRIES attempts"
+          exit 1
