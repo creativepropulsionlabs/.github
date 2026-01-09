@@ -223,6 +223,25 @@ jobs:
           echo "Default branch: $DEFAULT_BRANCH"
           echo "default_branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
 
+      - name: Validate Required Secrets
+        env:
+          REQUIRED_SECRETS: ${{ steps.context.outputs.required_secrets }}
+        run: |
+          echo "=== Validating Required Secrets ==="
+          
+          if [ -z "$REQUIRED_SECRETS" ] || [ "$REQUIRED_SECRETS" = "[]" ] || [ "$REQUIRED_SECRETS" = "null" ]; then
+            echo "No secrets required for this job"
+            exit 0
+          fi
+          
+          for key in $(echo "$REQUIRED_SECRETS" | jq -r '.[].inject_as'); do
+            if [ -z "${!key}" ]; then
+              echo "::error::Required secret '$key' is not present in environment"
+              exit 1
+            fi
+            echo "✓ Found required secret: $key"
+          done
+
       - name: Validate Required Fields (Execute Mode)
         if: inputs.mode == 'execute'
         env:
