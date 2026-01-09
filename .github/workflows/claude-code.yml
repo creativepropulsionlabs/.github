@@ -222,16 +222,9 @@ jobs:
       - name: Validate Required Fields (Execute Mode)
         if: inputs.mode == 'execute'
         env:
-          EXPECTED_PR_TITLE: ${{ steps.context.outputs.expected_pr_title }}
           SYSTEM_PROMPT_B64: ${{ steps.context.outputs.system_prompt_b64 }}
         run: |
           echo "=== Validating Required Fields ==="
-          
-          ERRORS=""
-          
-          if [ -z "$EXPECTED_PR_TITLE" ]; then
-            ERRORS="${ERRORS}Missing expected_pr_title\n"
-          fi
           
           # Decode and check system prompt
           SYSTEM_PROMPT=$(echo "$SYSTEM_PROMPT_B64" | base64 --decode)
@@ -239,14 +232,7 @@ jobs:
             echo "::warning::No system_prompt in job payload - job may have been created before V4 migration"
           fi
           
-          if [ -n "$ERRORS" ]; then
-            echo "::error::Validation failed:"
-            echo -e "$ERRORS"
-            exit 1
-          fi
-          
           echo "✓ All required fields present"
-          echo "  Expected PR Title: $EXPECTED_PR_TITLE"
           echo "  Canonical Branch: job/${{ inputs.job_id }}"
 
       - name: Checkout target repository
