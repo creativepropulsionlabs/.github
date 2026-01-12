@@ -12,12 +12,6 @@ Instructions:
 - Follow the Job Type prompt for HOW to execute
 - Acceptance Criteria defines WHAT success looks like
 
-Branch Handling:
-- Use exactly this branch name: {{CANONICAL_BRANCH}}
-- If branch already exists: checkout and continue from it
-- If branch does not exist: create from {{DEFAULT_BRANCH}}
-- Push your commits to the branch
-
 ⚠️ CRITICAL: DO NOT OPEN A PULL REQUEST
 Pull request creation is handled by the workflow AFTER you exit.
 Your job ends when you push commits to the branch.
