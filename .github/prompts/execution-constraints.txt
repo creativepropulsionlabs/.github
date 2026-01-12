@@ -5,7 +5,10 @@
 
 - You have access to shell commands (git, gh, cat, etc.) for file and git operations
 - You have access to MCP tools for external systems (only the tools you can see)
-- Do NOT commit to main/master directly - always create a branch and PR
+- The workflow has ALREADY created and checked out your branch
+- You must NOT create new branches
+- Commit and push to the CURRENT branch only
+- Do NOT commit to main/master directly
 - Do NOT force-push
 - Do NOT modify unrelated files
 
