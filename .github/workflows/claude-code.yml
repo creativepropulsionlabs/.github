@@ -805,18 +805,17 @@ jobs:
           echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
-      - name: Trigger Validation Workflow
-        if: inputs.mode == 'execute' && steps.create_pr.outputs.pr_number != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "=== Triggering Validation Workflow ==="
-          gh workflow run validate.yml \
-            --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
-            --ref "job/${{ inputs.job_id }}" \
-            -f pr_number="${{ steps.create_pr.outputs.pr_number }}" \
-            -f job_id="${{ inputs.job_id }}"
-          echo "✅ Validation workflow triggered"
+      # ══════════════════════════════════════════════════════════════════════
+      # DO NOT RE-ADD EXPLICIT VALIDATION TRIGGER HERE
+      # ══════════════════════════════════════════════════════════════════════
+      # Validation MUST run via pull_request events (opened/synchronize), not
+      # workflow_dispatch. GitHub branch protection only recognizes PR-triggered
+      # status checks. Explicit triggers create race conditions where:
+      #   1. workflow_dispatch completes first → sends VALIDATED webhook
+      #   2. Job advances to 'approved' state
+      #   3. But branch protection still blocks merge (wrong event type)
+      # Let CI fire naturally: PR create → opened, PR push → synchronize
+      # ══════════════════════════════════════════════════════════════════════
 
       - name: Submit GitHub PR Review
         id: pr_review
