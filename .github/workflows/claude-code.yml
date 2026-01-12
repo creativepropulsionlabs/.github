@@ -384,11 +384,7 @@ jobs:
           JOB_PAYLOAD=$(echo "$JOB_PAYLOAD_B64" | base64 --decode)
           FEEDBACK_HISTORY=$(echo "$FEEDBACK_HISTORY_B64" | base64 --decode)
           
-          # Canonical branch name
-          CANONICAL_BRANCH="job/${{ inputs.job_id }}"
-          
           echo "Attempt: $ATTEMPT_COUNT"
-          echo "Canonical Branch: $CANONICAL_BRANCH"
           
           # === Build System Prompt ===
           # Start with CONTRIBUTING.md if present
