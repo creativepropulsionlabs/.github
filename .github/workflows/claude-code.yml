@@ -442,10 +442,7 @@ jobs:
             if [ -f ".org/.github/prompts/execute-job.txt" ]; then
               # Write acceptance criteria to file for agent to read
               echo "$ACCEPTANCE_CRITERIA" > /tmp/acceptance-criteria.txt
-              # Substitute only simple placeholders (no multiline content)
-              sed -e "s|{{CANONICAL_BRANCH}}|$CANONICAL_BRANCH|g" \
-                  -e "s|{{DEFAULT_BRANCH}}|$DEFAULT_BRANCH|g" \
-                  .org/.github/prompts/execute-job.txt >> /tmp/user-message.txt
+              cat .org/.github/prompts/execute-job.txt >> /tmp/user-message.txt
             else
               echo "::error::Missing .org/.github/prompts/execute-job.txt"
               exit 1
