@@ -813,6 +813,7 @@ jobs:
           echo "=== Triggering Validation Workflow ==="
           gh workflow run validate.yml \
             --repo ${{ inputs.repo_owner }}/${{ inputs.repo_name }} \
+            --ref "job/${{ inputs.job_id }}" \
             -f pr_number="${{ steps.create_pr.outputs.pr_number }}" \
             -f job_id="${{ inputs.job_id }}"
           echo "✅ Validation workflow triggered"
