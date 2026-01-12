@@ -409,6 +409,8 @@ jobs:
           echo "- Mode: ${{ inputs.mode }}" >> /tmp/system-prompt.txt
           echo "- Repository: ${{ inputs.repo_owner }}/${{ inputs.repo_name }}" >> /tmp/system-prompt.txt
           echo "- Default Branch: $DEFAULT_BRANCH" >> /tmp/system-prompt.txt
+          echo "- Current Branch: job/${{ inputs.job_id }}" >> /tmp/system-prompt.txt
+          echo "- ⚠️ You are ALREADY on the correct branch. DO NOT create a new branch." >> /tmp/system-prompt.txt
           
           # === Build User Message ===
           # Start fresh
