@@ -316,6 +316,22 @@ jobs:
           git config user.name "Claude Code"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Setup Job Branch
+        if: inputs.mode == 'execute'
+        run: |
+          BRANCH_NAME="job/${{ inputs.job_id }}"
+          echo "=== Setting up branch: $BRANCH_NAME ==="
+          
+          # Idempotent branch setup - works on attempt 1 or attempt 100
+          # Fetch remote branch if it exists (ignore error if not)
+          git fetch origin "$BRANCH_NAME" 2>/dev/null || true
+          
+          # Checkout with -B: creates or resets branch
+          # Try remote first, fall back to creating fresh from current HEAD
+          git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME" 2>/dev/null || git checkout -B "$BRANCH_NAME"
+          
+          echo "✓ On branch: $(git branch --show-current)"
+
       - name: Create MCP Config
         env:
           MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
