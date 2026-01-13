@@ -66,6 +66,11 @@ on:
         description: 'PR number (review mode only)'
         required: false
         type: string
+      attempt:
+        description: 'Current attempt number for stale webhook protection (ADR-0012)'
+        required: false
+        type: number
+        default: 1
 
 permissions:
   contents: write
