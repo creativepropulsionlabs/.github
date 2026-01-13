@@ -323,8 +323,8 @@ jobs:
 
       - name: Configure Git
         run: |
-          git config user.name "Claude Code"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "cplwebadmin"
+          git config user.email "support@creativepl.com"
 
       - name: Setup Job Branch
         if: inputs.mode == 'execute'
