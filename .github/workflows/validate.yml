@@ -90,6 +90,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{
               \"job_id\": \"${{ inputs.job_id }}\",
+              \"attempt\": ${{ inputs.attempt }},
               \"repo\": \"${{ inputs.repo_name }}\",
               \"pr_number\": ${{ inputs.pr_number || 0 }},
               \"status\": \"${{ steps.normalize.outputs.status }}\",
