@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: ''
+      attempt:
+        description: 'Current attempt number for stale webhook protection (ADR-0012)'
+        required: false
+        type: number
+        default: 1
 
     secrets:
       SUPABASE_PUBLIC_URL:
