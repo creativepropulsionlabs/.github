@@ -325,7 +325,7 @@ jobs:
       - name: Configure Git
         run: |
           git config user.name "cplwebadmin"
-          git config user.email "support@creativepl.com"
+          git config user.email "webadmin@creativepl.com"
 
       - name: Setup Job Branch
         if: inputs.mode == 'execute'
