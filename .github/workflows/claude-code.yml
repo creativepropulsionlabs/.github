@@ -258,6 +258,7 @@ jobs:
         with:
           ref: ${{ steps.repo_info.outputs.default_branch }}
           fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
 
       - name: Checkout org-level Claude assets
         uses: actions/checkout@v4
