@@ -68,11 +68,15 @@ jobs:
       # Normalize status for pipeline state machine
       # SKIPPED → VALIDATED (no changes = nothing to fail)
       # Also sanitize REASON to be JSON-safe (strip ANSI codes, escape special chars)
+      # NOTE: Uses env vars to avoid shell escaping issues with untrusted input (quotes, etc.)
       - name: Normalize Status
         id: normalize
+        env:
+          STATUS_IN: ${{ inputs.validation_status }}
+          REASON_IN: ${{ inputs.validation_reason }}
         run: |
-          STATUS="${{ inputs.validation_status }}"
-          REASON="${{ inputs.validation_reason }}"
+          STATUS="$STATUS_IN"
+          REASON="$REASON_IN"
           
           if [ "$STATUS" = "SKIPPED" ]; then
             STATUS="VALIDATED"
