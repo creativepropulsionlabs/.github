@@ -67,6 +67,7 @@ jobs:
     steps:
       # Normalize status for pipeline state machine
       # SKIPPED → VALIDATED (no changes = nothing to fail)
+      # Also sanitize REASON to be JSON-safe (strip ANSI codes, escape special chars)
       - name: Normalize Status
         id: normalize
         run: |
@@ -78,24 +79,44 @@ jobs:
             REASON="No source changes (fast pass)"
           fi
           
+          # Sanitize REASON for JSON safety:
+          # 1. Strip ANSI escape codes (e.g., \x1b[0m, \x1b[33m)
+          # 2. Truncate to 500 chars to avoid huge payloads
+          REASON=$(echo "$REASON" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-500)
+          
           echo "status=$STATUS" >> $GITHUB_OUTPUT
           echo "reason=$REASON" >> $GITHUB_OUTPUT
           echo "Normalized status: $STATUS"
 
       # Signal final validation result to n8n webhook
+      # Uses jq to safely construct JSON (handles quotes, escapes, special chars)
       - name: Signal Validation Result
         if: inputs.job_id != ''
+        env:
+          WEBHOOK_URL: ${{ secrets.N8N_BASE_URL }}/webhook/validation-result
+          JOB_ID: ${{ inputs.job_id }}
+          ATTEMPT: ${{ inputs.attempt }}
+          REPO_NAME: ${{ inputs.repo_name }}
+          PR_NUMBER: ${{ inputs.pr_number || 0 }}
+          STATUS: ${{ steps.normalize.outputs.status }}
+          REASON: ${{ steps.normalize.outputs.reason }}
         run: |
-          curl -sf -X POST "${{ secrets.N8N_BASE_URL }}/webhook/validation-result" \
+          # Build JSON payload safely using jq
+          PAYLOAD=$(jq -n \
+            --arg job_id "$JOB_ID" \
+            --argjson attempt "$ATTEMPT" \
+            --arg repo "$REPO_NAME" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg status "$STATUS" \
+            --arg reason "$REASON" \
+            '{job_id: $job_id, attempt: $attempt, repo: $repo, pr_number: $pr_number, status: $status, reason: $reason}')
+          
+          echo "Sending webhook payload:"
+          echo "$PAYLOAD" | jq .
+          
+          curl -sf -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"job_id\": \"${{ inputs.job_id }}\",
-              \"attempt\": ${{ inputs.attempt }},
-              \"repo\": \"${{ inputs.repo_name }}\",
-              \"pr_number\": ${{ inputs.pr_number || 0 }},
-              \"status\": \"${{ steps.normalize.outputs.status }}\",
-              \"reason\": \"${{ steps.normalize.outputs.reason }}\"
-            }"
+            -d "$PAYLOAD"
 
       # Generic VALIDATED comment - no repo-specific checklist
       # Per ADR-0011: checklists are presentation, not contract
