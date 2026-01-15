@@ -417,7 +417,7 @@ jobs:
           # ============================================
           # FORCED OBSERVATION: Read existing code
           # ============================================
-          TARGET_PATH=$(echo "$JOB_PAYLOAD" | jq -r '.schema.target_path // ""')
+          TARGET_PATH=$(echo "$JOB_PAYLOAD" | jq -r '.schema.ui_spec.ui.target_path // ""')
           if [ -n "$TARGET_PATH" ]; then
             TARGET_DIR=$(dirname "$TARGET_PATH")
             
