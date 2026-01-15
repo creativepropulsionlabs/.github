@@ -1025,6 +1025,7 @@ jobs:
 
       - name: POST to Result Webhook
         if: always()
+        continue-on-error: true
         env:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_JOB_ID: ${{ inputs.job_id }}
