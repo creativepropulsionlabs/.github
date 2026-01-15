@@ -1068,5 +1068,6 @@ jobs:
             fi
           done
           
-          echo "::error::Webhook POST failed after $MAX_RETRIES attempts"
-          exit 1
+          echo "::warning::Webhook POST failed after $MAX_RETRIES attempts - workflow succeeded but n8n may not process result"
+          # Non-fatal: workflow completed successfully, webhook failure shouldn't fail the job
+          exit 0
