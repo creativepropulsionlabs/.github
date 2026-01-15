@@ -665,39 +665,58 @@ jobs:
               print(json.dumps(result))
               sys.exit(0)
           
-          code_blocks = re.findall(r'```(?:json)?\s*(\{[^`]+\})\s*```', text, re.DOTALL)
-          for block in code_blocks:
+          def try_parse_json(s):
+              """Try to parse JSON, handling escaped quotes."""
               try:
-                  parsed = json.loads(block)
-                  if "verdict" in parsed:
+                  return json.loads(s)
+              except json.JSONDecodeError:
+                  pass
+              try:
+                  unescaped = s.replace('\\"', '"')
+                  return json.loads(unescaped)
+              except json.JSONDecodeError:
+                  pass
+              try:
+                  unescaped = s.replace('\\\\"', '"').replace('\\"', '"')
+                  return json.loads(unescaped)
+              except json.JSONDecodeError:
+                  pass
+              return None
+          
+          # Strategy 1: Find JSON in code blocks
+          code_blocks = re.findall(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+          for block in code_blocks:
+              parsed = try_parse_json(block)
+              if parsed and "verdict" in parsed:
+                  result = {
+                      "verdict": parsed.get("verdict", "unknown"),
+                      "summary": parsed.get("summary", ""),
+                      "issues": parsed.get("issues", [])
+                  }
+                  break
+          
+          # Strategy 2: Find standalone JSON objects
+          if result["verdict"] == "unknown":
+              json_pattern = r'\{[^{}]*"verdict"[^{}]*\}'
+              matches = re.findall(json_pattern, text)
+              for match in matches:
+                  parsed = try_parse_json(match)
+                  if parsed and "verdict" in parsed:
                       result = {
                           "verdict": parsed.get("verdict", "unknown"),
                           "summary": parsed.get("summary", ""),
                           "issues": parsed.get("issues", [])
                       }
                       break
-              except json.JSONDecodeError:
-                  continue
           
+          # Strategy 3: Extract verdict keyword directly as last resort
           if result["verdict"] == "unknown":
-              json_pattern = r'\{[^{}]*(?:\[[^\[\]]*\][^{}]*)?"verdict"[^{}]*(?:\[[^\[\]]*\][^{}]*)?\}'
-              matches = re.findall(json_pattern, text)
-              for match in matches:
-                  try:
-                      parsed = json.loads(match)
-                      if "verdict" in parsed:
-                          result = {
-                              "verdict": parsed.get("verdict", "unknown"),
-                              "summary": parsed.get("summary", ""),
-                              "issues": parsed.get("issues", [])
-                          }
-                          break
-                  except json.JSONDecodeError:
-                      continue
-          
-          except Exception as e:
-              # Any parsing failure = unknown verdict, don't crash
-              result = {"verdict": "unknown", "summary": f"Parser error: {str(e)}", "issues": []}
+              verdict_match = re.search(r'"verdict"\s*:\s*"(approved|changes_requested|rejected)"', text, re.IGNORECASE)
+              if verdict_match:
+                  result["verdict"] = verdict_match.group(1).lower()
+                  summary_match = re.search(r'"summary"\s*:\s*"([^"]*)"', text)
+                  if summary_match:
+                      result["summary"] = summary_match.group(1)
           
           print(json.dumps(result))
           PYTHON_EOF
