@@ -414,6 +414,30 @@ jobs:
           # Append execution constraints from file
           cat .org/.github/prompts/execution-constraints.txt >> /tmp/system-prompt.txt
           
+          # ============================================
+          # FORCED OBSERVATION: Read existing code
+          # ============================================
+          TARGET_PATH=$(echo "$JOB_PAYLOAD" | jq -r '.schema.target_path // ""')
+          if [ -n "$TARGET_PATH" ]; then
+            TARGET_DIR=$(dirname "$TARGET_PATH")
+            
+            if [ -d "$TARGET_DIR" ]; then
+              echo "" >> /tmp/system-prompt.txt
+              echo "## EXISTING CODE (you MUST conform to these patterns)" >> /tmp/system-prompt.txt
+              echo "" >> /tmp/system-prompt.txt
+              
+              FILE_COUNT=0
+              for f in "$TARGET_DIR"/*.ts "$TARGET_DIR"/*.tsx; do
+                if [ -f "$f" ] && [ $FILE_COUNT -lt 5 ]; then
+                  echo "### $f" >> /tmp/system-prompt.txt
+                  head -150 "$f" >> /tmp/system-prompt.txt
+                  echo "" >> /tmp/system-prompt.txt
+                  FILE_COUNT=$((FILE_COUNT + 1))
+                fi
+              done
+            fi
+          fi
+          
           # Add job context (mechanical substitution)
           echo "" >> /tmp/system-prompt.txt
           echo "- Job ID: ${{ inputs.job_id }}" >> /tmp/system-prompt.txt
