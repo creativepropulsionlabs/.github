@@ -429,8 +429,10 @@ jobs:
               FILE_COUNT=0
               for f in "$TARGET_DIR"/*.ts "$TARGET_DIR"/*.tsx; do
                 if [ -f "$f" ] && [ $FILE_COUNT -lt 5 ]; then
-                  echo "### $f" >> /tmp/system-prompt.txt
+                  echo "### FILE: $f (AUTHORITATIVE — DO NOT DEVIATE)" >> /tmp/system-prompt.txt
+                  echo '```typescript' >> /tmp/system-prompt.txt
                   head -150 "$f" >> /tmp/system-prompt.txt
+                  echo '```' >> /tmp/system-prompt.txt
                   echo "" >> /tmp/system-prompt.txt
                   FILE_COUNT=$((FILE_COUNT + 1))
                 fi
