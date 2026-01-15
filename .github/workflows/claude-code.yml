@@ -695,6 +695,10 @@ jobs:
                   except json.JSONDecodeError:
                       continue
           
+          except Exception as e:
+              # Any parsing failure = unknown verdict, don't crash
+              result = {"verdict": "unknown", "summary": f"Parser error: {str(e)}", "issues": []}
+          
           print(json.dumps(result))
           PYTHON_EOF
           )
