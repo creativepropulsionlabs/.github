@@ -654,11 +654,16 @@ jobs:
             VERDICT_DATA=$(python3 << 'PYTHON_EOF'
           import re
           import json
-          
-          with open('/tmp/result-text.txt', 'r') as f:
-              text = f.read()
+          import sys
           
           result = {"verdict": "unknown", "summary": "Could not parse verdict from response", "issues": []}
+          
+          try:
+              with open('/tmp/result-text.txt', 'r') as f:
+                  text = f.read()
+          except Exception as e:
+              print(json.dumps(result))
+              sys.exit(0)
           
           code_blocks = re.findall(r'```(?:json)?\s*(\{[^`]+\})\s*```', text, re.DOTALL)
           for block in code_blocks:
