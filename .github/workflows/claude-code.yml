@@ -136,7 +136,7 @@ jobs:
           OPERATION=$(echo "$RESPONSE" | jq -r '.job.operation // "create"')
           
           # Generic entity fallback: schema jobs have .schema.name, entity jobs have .entity.snapshot.*
-          CONTEXT_NAME=$(echo "$JOB_PAYLOAD" | jq -r '.schema.name // .entity.snapshot.name // .entity.snapshot.workflow_slug // .entity.snapshot.key // ""')
+          CONTEXT_NAME=$(echo "$JOB_PAYLOAD" | jq -r '.schema.name // .entity.snapshot.name // .entity.snapshot.workflow_slug // .entity.snapshot.key // .entity.id // ""')
           ENTITY_TYPE=$(echo "$JOB_PAYLOAD" | jq -r '.entity.type // "dict_schema"')
           FEEDBACK_HISTORY=$(echo "$RESPONSE" | jq -c '.job.feedback_history // []')
           
