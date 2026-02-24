@@ -123,20 +123,21 @@ jobs:
           
           # ============================================
           # V4: Extract from job.payload (THE execution contract)
-          # job.payload contains: task, schema, job_type, execution
+          # job.payload contains: task, schema|entity, job_type
           # ============================================
           JOB_PAYLOAD=$(echo "$RESPONSE" | jq -c '.job.payload // {}')
           
           # Extract job metadata
           JOB_STATUS=$(echo "$RESPONSE" | jq -r '.job.job_status // "unknown"')
           AGENT_TYPE=$(echo "$RESPONSE" | jq -r '.job.agent_type // "github_action"')
-          ATTEMPT_COUNT=$(echo "$RESPONSE" | jq -r '.job.attempt_count // 0')
+          ATTEMPT_COUNT=$(echo "$RESPONSE" | jq -r '.job.current_attempt // 0')
           MAX_ATTEMPTS=$(echo "$RESPONSE" | jq -r '.job.max_attempts // 3')
           # Extract operation from job (added to RPC output)
           OPERATION=$(echo "$RESPONSE" | jq -r '.job.operation // "create"')
           
-          # Extract schema name from payload
-          SCHEMA_NAME=$(echo "$JOB_PAYLOAD" | jq -r '.schema.name // ""')
+          # Generic entity fallback: schema jobs have .schema.name, entity jobs have .entity.snapshot.*
+          CONTEXT_NAME=$(echo "$JOB_PAYLOAD" | jq -r '.schema.name // .entity.snapshot.name // .entity.snapshot.workflow_slug // .entity.snapshot.key // ""')
+          ENTITY_TYPE=$(echo "$JOB_PAYLOAD" | jq -r '.entity.type // "dict_schema"')
           FEEDBACK_HISTORY=$(echo "$RESPONSE" | jq -c '.job.feedback_history // []')
           
           # Extract from payload.job_type (baked at job creation - immutable)
@@ -174,7 +175,8 @@ jobs:
           echo "Model: $MODEL"
           echo "Strategy: $STRATEGY"
           echo "Operation: $OPERATION"
-          echo "Schema Name: $SCHEMA_NAME"
+          echo "Context Name: $CONTEXT_NAME"
+          echo "Entity Type: $ENTITY_TYPE"
           echo "System Prompt Length: ${#SYSTEM_PROMPT}"
           echo "Acceptance Criteria Length: ${#ACCEPTANCE_CRITERIA}"
           echo "Attempt Count: $ATTEMPT_COUNT"
@@ -205,7 +207,9 @@ jobs:
             echo "strategy=$STRATEGY"
             echo "allowed_paths_b64=$ALLOWED_PATHS_B64"
             echo "operation=$OPERATION"
-            echo "schema_name=$SCHEMA_NAME"
+            echo "context_name=$CONTEXT_NAME"
+            echo "entity_type=$ENTITY_TYPE"
+            echo "schema_name=$CONTEXT_NAME"
             echo "model=$MODEL"
             echo "provider=$PROVIDER"
             echo "toolset=$TOOLSET"
@@ -417,7 +421,7 @@ jobs:
           # ============================================
           # FORCED OBSERVATION: Read existing code
           # ============================================
-          TARGET_PATH=$(echo "$JOB_PAYLOAD" | jq -r '.schema.ui_spec.ui.target_path // ""')
+          TARGET_PATH=$(echo "$JOB_PAYLOAD" | jq -r '.schema.ui_spec.ui.target_path // .entity.snapshot.target_path // ""')
           if [ -n "$TARGET_PATH" ]; then
             TARGET_DIR=$(dirname "$TARGET_PATH")
             
@@ -822,7 +826,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           OPERATION: ${{ steps.context.outputs.operation }}
           JOB_TYPE_LABEL: ${{ steps.context.outputs.job_type_label }}
-          SCHEMA_NAME: ${{ steps.context.outputs.schema_name }}
+          CONTEXT_NAME: ${{ steps.context.outputs.context_name }}
         run: |
           echo "=== Creating Pull Request ==="
           
@@ -835,10 +839,10 @@ jobs:
             exit 1
           fi
           
-          # Compute PR title: {Operation} {job_type.label}: {schema.name}
+          # CONTEXT_NAME works for both schema jobs (.schema.name) and entity jobs (.entity.snapshot.*)
           OP_INITCAP=$(echo "$OPERATION" | sed 's/.*/\L&/; s/[a-z]*/\u&/')
-          if [ -n "$SCHEMA_NAME" ]; then
-            PR_TITLE="${OP_INITCAP} ${JOB_TYPE_LABEL}: ${SCHEMA_NAME}"
+          if [ -n "$CONTEXT_NAME" ]; then
+            PR_TITLE="${OP_INITCAP} ${JOB_TYPE_LABEL}: ${CONTEXT_NAME}"
           else
             PR_TITLE="${OP_INITCAP} ${JOB_TYPE_LABEL}"
           fi
