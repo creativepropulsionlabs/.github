@@ -1,0 +1,100 @@
+# Reusable Sentry Tag Compliance Workflow
+#
+# Validates that Sentry events carry required correlation tags per ADR-0805.
+# Three-state model: VALIDATED | REJECTED | SKIPPED
+#
+# Usage:
+#   jobs:
+#     sentry-tags:
+#       uses: creativepropulsionlabs/.github/.github/workflows/validate-sentry-tags.yml@main
+#       with:
+#         sentry_project_slug: my-project
+#         environment: staging
+#       secrets:
+#         SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+#         SENTRY_ORG_SLUG: ${{ secrets.SENTRY_ORG_SLUG }}
+
+name: Sentry Tag Compliance
+
+on:
+  workflow_call:
+    inputs:
+      sentry_project_slug:
+        description: 'Sentry project slug to validate'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment (development|staging|production)'
+        required: false
+        type: string
+        default: 'staging'
+      sample_size:
+        description: 'Number of events to sample'
+        required: false
+        type: number
+        default: 50
+      compliance_threshold:
+        description: 'Minimum compliance percentage (0-100)'
+        required: false
+        type: number
+        default: 95
+
+    secrets:
+      SENTRY_AUTH_TOKEN:
+        required: true
+      SENTRY_ORG_SLUG:
+        required: true
+
+    outputs:
+      compliance_percentage:
+        description: 'Percentage of events that are tag-compliant'
+        value: ${{ jobs.validate.outputs.compliance_percentage }}
+      status:
+        description: 'VALIDATED | REJECTED | SKIPPED'
+        value: ${{ jobs.validate.outputs.status }}
+
+jobs:
+  validate:
+    name: Validate Sentry Tags
+    runs-on: ubuntu-latest
+
+    outputs:
+      compliance_percentage: ${{ steps.check.outputs.compliance_percentage }}
+      status: ${{ steps.check.outputs.status }}
+
+    steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@v4
+        with:
+          repository: creativepropulsionlabs/.github
+          sparse-checkout: scripts/validate-sentry-tags.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Verify dependencies
+        run: |
+          command -v curl >/dev/null 2>&1 || { echo "curl is required"; exit 1; }
+          command -v jq >/dev/null 2>&1 || { echo "jq is required"; exit 1; }
+
+      - name: Run tag compliance check
+        id: check
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG_SLUG: ${{ secrets.SENTRY_ORG_SLUG }}
+          SENTRY_PROJECT_SLUG: ${{ inputs.sentry_project_slug }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SAMPLE_SIZE: ${{ inputs.sample_size }}
+          COMPLIANCE_THRESHOLD: ${{ inputs.compliance_threshold }}
+        run: |
+          chmod +x scripts/validate-sentry-tags.sh
+          scripts/validate-sentry-tags.sh
+
+      - name: Log result
+        if: always()
+        run: |
+          echo "### Sentry Tag Compliance" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Project:** ${{ inputs.sentry_project_slug }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.check.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Compliance:** ${{ steps.check.outputs.compliance_percentage }}%" >> $GITHUB_STEP_SUMMARY
+          echo "- **Threshold:** ${{ inputs.compliance_threshold }}%" >> $GITHUB_STEP_SUMMARY
